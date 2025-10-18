@@ -1,0 +1,10 @@
+{
+	"domain": "videoipcamera_com",
+	"name": "videoipcamera.com Camera",
+	"codeowners": ["@LouisBrunner"],
+	"config_flow": true,
+	"documentation": "https://github.com/ludeeus/videoipcamera_com",
+	"iot_class": "cloud_polling",
+	"issue_tracker": "https://github.com/ludeeus/videoipcamera_com/issues",
+	"version": "0.1.0"
+}

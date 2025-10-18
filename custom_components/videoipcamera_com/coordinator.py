@@ -1,4 +1,4 @@
-"""DataUpdateCoordinator for integration_blueprint."""
+"""DataUpdateCoordinator for videoipcamera_com."""
 
 from __future__ import annotations
 
