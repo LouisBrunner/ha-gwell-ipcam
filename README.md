@@ -8,8 +8,7 @@ Integrate videoipcamera.cn/com IP cameras into Home Assistant (compatible with H
 
 2. Install by clicking this button:
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_reposit
-y/?owner=LouisBrunner&repository=ha-videoipcamera)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_reposity/?owner=LouisBrunner&repository=ha-videoipcamera)
 
 ## Development
 

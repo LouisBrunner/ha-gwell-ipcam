@@ -1,0 +1,41 @@
+[project]
+name = "no"
+version = "0"
+dependencies = [
+    "construct==2.10.70",
+]
+
+[dependency-groups]
+dev = [
+    "homeassistant==2025.4.1",
+    "pip==25.2",
+    "ruff==0.14.0",
+]
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["ALL"]
+
+ignore = [
+    "ANN401", # Dynamically typed expressions (typing.Any) are disallowed
+    "D203",   # no-blank-line-before-class (incompatible with formatter)
+    "D212",   # multi-line-summary-first-line (incompatible with formatter)
+    "COM812", # incompatible with formatter
+    "ISC001", # incompatible with formatter
+    # disable for now
+    "D100", # docstring
+    "D101", # docstring
+    "D102", # docstring
+    "D103", # docstring
+]
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+
+[tool.ruff.lint.pyupgrade]
+keep-runtime-typing = true
+
+[tool.ruff.lint.mccabe]
+max-complexity = 25
