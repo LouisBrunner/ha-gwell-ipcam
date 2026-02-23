@@ -8,7 +8,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "homeassistant==2025.4.1",
-    "pip==25.2",
+    "pip==26.0.1",
     "ruff==0.14.0",
 ]
 
