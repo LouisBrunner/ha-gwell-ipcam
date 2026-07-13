@@ -9,7 +9,7 @@ dependencies = [
 dev = [
     "homeassistant==2025.4.1",
     "pip==25.2",
-    "ruff==0.14.0",
+    "ruff==0.15.21",
 ]
 
 [tool.ruff]
