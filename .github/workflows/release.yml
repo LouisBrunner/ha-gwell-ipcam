@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  draft:
+    name: Draft release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Get version
+        id: ver
+        run: echo "version=$(jq -r '.version' custom_components/gwell_ipcam/manifest.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release
+        uses: LouisBrunner/.github/.github/actions/draft-release@main
+        with:
+          version: ${{ steps.ver.outputs.version }}

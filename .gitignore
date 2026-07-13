@@ -18,3 +18,4 @@ config/*
 !config/configuration.yaml
 
 capture.pcap
+.DS_Store

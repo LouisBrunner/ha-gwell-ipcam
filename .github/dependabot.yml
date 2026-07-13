@@ -1,33 +1,108 @@
-# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+# yaml-language-server: $schema=https://json.schemastore.org/dependabot-2.0.json
 version: 2
 updates:
   - package-ecosystem: "github-actions"
+    cooldown:
+      default-days: 7
     directory: "/"
     schedule:
       interval: "weekly"
     groups:
-      actions-deps:
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+      actions-major:
+        applies-to: version-updates
+        update-types:
+          - "major"
+        patterns:
+          - "*"
+      actions-minor:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
         patterns:
           - "*"
 
-  - package-ecosystem: "pip"
+  - package-ecosystem: "docker"
+    cooldown:
+      default-days: 7
+    directories:
+      - "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      docker-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+      docker-major:
+        applies-to: version-updates
+        update-types:
+          - "major"
+        patterns:
+          - "*"
+      docker-minor:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+        patterns:
+          - "*"
+
+  - package-ecosystem: "docker-compose"
+    cooldown:
+      default-days: 7
+    directories:
+      - "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      docker-compose-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+      docker-compose-major:
+        applies-to: version-updates
+        update-types:
+          - "major"
+        patterns:
+          - "*"
+      docker-compose-minor:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+        patterns:
+          - "*"
+
+  - package-ecosystem: "uv"
+    cooldown:
+      default-days: 7
     directory: "/"
     schedule:
       interval: "weekly"
     ignore:
       # Dependabot should not update Home Assistant as that should match the homeassistant key in hacs.json
       - dependency-name: "homeassistant"
+      - dependency-name: "uv"
     groups:
-      security-updates:
+      uv-security:
         applies-to: security-updates
         patterns:
           - "*"
-      major-updates:
+      uv-major:
         applies-to: version-updates
         update-types:
           - "major"
-      minor-updates:
+        patterns:
+          - "*"
+      uv-minor:
         applies-to: version-updates
         update-types:
           - "minor"
           - "patch"
+        patterns:
+          - "*"

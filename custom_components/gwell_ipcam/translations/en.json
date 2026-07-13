@@ -1,0 +1,159 @@
+{
+	"config": {
+		"abort": {
+			"already_configured": "This camera is already configured.",
+			"no_devices_found": "No new cameras were found on the network.",
+			"reconfigure_successful": "Reconfigure successful"
+		},
+		"error": {
+			"auth": "The password was rejected by the camera.",
+			"connection": "Unable to connect to the camera.",
+			"unknown": "Unknown error occurred."
+		},
+		"flow_title": "{name}",
+		"step": {
+			"discover": {
+				"data": {
+					"device": "Camera"
+				},
+				"title": "Select a camera"
+			},
+			"discover_password": {
+				"data": {
+					"password": "Password"
+				},
+				"title": "Connect to {name}"
+			},
+			"manual": {
+				"data": {
+					"host": "Host",
+					"password": "Password",
+					"port": "Port"
+				},
+				"title": "Camera connection"
+			},
+			"reconfigure": {
+				"data": {
+					"host": "Host",
+					"password": "Password (leave blank to keep the current one)",
+					"port": "Port"
+				},
+				"title": "Camera connection"
+			},
+			"user": {
+				"menu_options": {
+					"discover": "Auto-discover a camera on the network",
+					"manual": "Enter host/port manually"
+				}
+			}
+		}
+	},
+	"entity": {
+		"button": {
+			"format_sd_card": {
+				"name": "Format SD card"
+			},
+			"quick_record": {
+				"name": "Quick record"
+			},
+			"sync_time": {
+				"name": "Sync time"
+			}
+		},
+		"event": {
+			"motion": {
+				"name": "Motion"
+			}
+		},
+		"image": {
+			"latest_recording": {
+				"name": "Latest recording"
+			}
+		},
+		"number": {
+			"buzzer_duration": {
+				"name": "Buzzer duration"
+			},
+			"motion_sensitivity": {
+				"name": "Motion sensitivity"
+			},
+			"record_quality": {
+				"name": "Record quality"
+			},
+			"video_volume": {
+				"name": "Volume"
+			}
+		},
+		"select": {
+			"record_time": {
+				"name": "Record time",
+				"state": {
+					"1": "1 minute",
+					"2": "2 minutes",
+					"3": "3 minutes"
+				}
+			},
+			"record_type": {
+				"name": "Record mode",
+				"state": {
+					"alarm": "Alarm",
+					"manual": "Manual",
+					"timing": "Timing"
+				}
+			},
+			"video_format": {
+				"name": "Video standard",
+				"state": {
+					"ntsc": "NTSC",
+					"pal": "PAL"
+				}
+			}
+		},
+		"sensor": {
+			"camera_time": {
+				"name": "Camera time"
+			},
+			"live_state": {
+				"name": "Live state"
+			},
+			"network_type": {
+				"name": "Network type",
+				"state": {
+					"wifi": "Wi-Fi",
+					"wired": "Wired"
+				}
+			},
+			"recordings": {
+				"name": "Recordings"
+			},
+			"sd_card_space_total": {
+				"name": "SD card space total"
+			},
+			"sd_card_space_used": {
+				"name": "SD card space used"
+			}
+		},
+		"switch": {
+			"alarm": {
+				"name": "Alarm"
+			},
+			"defence_switch": {
+				"name": "Defence active"
+			},
+			"image_flip": {
+				"name": "Image flip"
+			},
+			"motion_detect": {
+				"name": "Motion detection"
+			},
+			"record": {
+				"name": "Record"
+			}
+		},
+		"update": {
+			"firmware": {
+				"name": "Firmware"
+			}
+		}
+	}
+}

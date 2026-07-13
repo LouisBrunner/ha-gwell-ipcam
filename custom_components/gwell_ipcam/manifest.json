@@ -1,0 +1,14 @@
+{
+	"domain": "gwell_ipcam",
+	"name": "Gwell IP Camera",
+	"after_dependencies": ["media_source"],
+	"codeowners": ["@LouisBrunner"],
+	"config_flow": true,
+	"dhcp": [{ "macaddress": "4CB008*" }],
+	"documentation": "https://github.com/LouisBrunner/ha-gwell-ipcam",
+	"integration_type": "device",
+	"iot_class": "local_polling",
+	"issue_tracker": "https://github.com/LouisBrunner/ha-gwell-ipcam/issues",
+	"requirements": [],
+	"version": "0.1.0"
+}

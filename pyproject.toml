@@ -1,41 +1,71 @@
+#:schema https://json.schemastore.org/pyproject.json
+
 [project]
-name = "no"
+name = "ha-gwell-ipcam"
 version = "0"
-dependencies = [
-    "construct==2.10.70",
-]
+requires-python = ">=3.14.2"
+dependencies = []
 
 [dependency-groups]
-dev = [
-    "homeassistant==2025.4.1",
-    "pip==25.2",
-    "ruff==0.14.0",
-]
+dev = ["ruff==0.15.20", "tombi==1.1.7", "ty==0.0.56"]
+docker = ["aiohasupervisor==0.5.0"]
+# kept in lockstep with pytest-homeassistant-custom-component's own pin below
+hass = ["homeassistant==2026.4.2"]
+test = ["pytest-homeassistant-custom-component==0.13.323"]
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py314"
+line-length = 120
 
 [tool.ruff.lint]
 select = ["ALL"]
-
 ignore = [
-    "ANN401", # Dynamically typed expressions (typing.Any) are disallowed
-    "D203",   # no-blank-line-before-class (incompatible with formatter)
-    "D212",   # multi-line-summary-first-line (incompatible with formatter)
-    "COM812", # incompatible with formatter
-    "ISC001", # incompatible with formatter
-    # disable for now
-    "D100", # docstring
-    "D101", # docstring
-    "D102", # docstring
-    "D103", # docstring
+  "ANN401",  # Dynamically typed expressions (typing.Any) are disallowed
+  # conflicting rules
+  "D203",
+  "D212",
+  "COM812",
+  # they are useful
+  "FIX001",
+  "FIX002",
+  "TD001",
+  "TD002",
+  "TD003",
 ]
 
-[tool.ruff.lint.flake8-pytest-style]
-fixture-parentheses = false
+[tool.ruff.lint.per-file-ignores]
+"scripts/*.py" = ["T201"]
+"tests/*.py" = [
+  "S101",    # asserts are the point
+  "SLF001",  # private-member access to white-box-test the protocol client
+  "PLR2004", # magic values in wire-format fixtures
+  "DTZ001",  # naive datetimes matching the camera's own naive clock
+  "D100",    # module docstrings
+  "D101",    # class docstrings
+  "D102",    # method docstrings
+  "D103",    # test function docstrings -- names are the description
+  "ANN001",  # test/fixture parameter types (mostly HA fixtures)
+  "ANN201",  # test function return types (`-> None` on every test is noise)
+  "ANN202",  # fixture return types
+  "D107",    # __init__ docstrings on test helper classes
+  "S106",    # hardcoded fake passwords/hashes in fixtures
+  "S107",    # same, as function defaults
+]
 
-[tool.ruff.lint.pyupgrade]
-keep-runtime-typing = true
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
 
-[tool.ruff.lint.mccabe]
-max-complexity = 25
+[tool.setuptools]
+packages = ["custom_components"]
+
+[tool.uv]
+package = false
+index-strategy = "unsafe-best-match"
+# docker/hass/test each pin their own homeassistant-compatible dependency
+# versions and are never installed together -- let each resolve independently.
+conflicts = [[{ group = "docker" }, { group = "test" }], [{ group = "hass" }, { group = "test" }]]
+
+[[tool.uv.index]]
+name = "hass-musl"
+url = "https://wheels.home-assistant.io/musllinux-index/"
