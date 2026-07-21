@@ -7,6 +7,10 @@ default_config:
 homeassistant:
   debug: true
 
+# https://www.home-assistant.io/integrations/http/
+http:
+  server_port: 8124
+
 # https://www.home-assistant.io/integrations/logger/
 logger:
   default: info

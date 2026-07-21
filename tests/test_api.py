@@ -90,6 +90,12 @@ def test_is_weak_password_int_detects_runs_and_repeats():
     assert not sc._is_weak_password_int(384756)
 
 
+def test_sricam_protocol_coerces_float_port_to_int():
+    client = sc._SricamProtocol("192.168.0.66", 51880.0, "888888")  # ty: ignore[invalid-argument-type]
+    assert client._port == 51880
+    assert isinstance(client._port, int)
+
+
 # -- discovery -----------------------------------------------------------------
 
 
@@ -326,6 +332,41 @@ async def test_toggle_quick_record_saves_mode_then_restores_it():
         assert stopped is False
         set_recording.assert_called_once_with(enabled=False)
         set_setting.assert_called_once_with(sc.SETTING_RECORD_TYPE, 1)
+
+
+# -- _run_blocking: every raw exception gets mapped to our own hierarchy --------
+
+
+class _FakeHass:
+    async def async_add_executor_job(self, fn):
+        return fn()
+
+
+@pytest.mark.asyncio
+async def test_run_blocking_wraps_oserror_as_connection_error():
+    def fn():
+        raise OSError("Name or service not known")
+
+    with pytest.raises(sc.APIConnectionError, match="Name or service not known"):
+        await sc._run_blocking(_FakeHass(), fn)  # ty: ignore[invalid-argument-type]
+
+
+@pytest.mark.asyncio
+async def test_run_blocking_wraps_other_exceptions_as_api_error():
+    def fn():
+        raise TypeError("'float' object cannot be interpreted as an integer")
+
+    with pytest.raises(sc.APIError, match="float"):
+        await sc._run_blocking(_FakeHass(), fn)  # ty: ignore[invalid-argument-type]
+
+
+@pytest.mark.asyncio
+async def test_run_blocking_passes_api_errors_through_unchanged():
+    def fn():
+        raise sc.APIAuthError("nope")
+
+    with pytest.raises(sc.APIAuthError, match="nope"):
+        await sc._run_blocking(_FakeHass(), fn)  # ty: ignore[invalid-argument-type]
 
 
 # -- StorageState / Recording mapping --------------------------------------------

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, override
 
 from homeassistant.components.update import UpdateEntity, UpdateEntityFeature
+from homeassistant.helpers.event import async_track_time_interval
 
+from .const import FIRMWARE_CHECK_INTERVAL_S
 from .coordinator import GwellIPCamCoordinator
 from .entity import GwellIPCamEntity
 
@@ -44,6 +47,26 @@ class GwellIPCamFirmwareUpdate(GwellIPCamEntity[GwellIPCamCoordinator], UpdateEn
         super().__init__(coordinator, identity)
         self._attr_unique_id = f"{coordinator.config_entry.unique_id}_firmware"
         self._attr_installed_version = identity.firmware_version
+
+    async def async_added_to_hass(self) -> None:
+        """
+        Check for updates once now, then on a relaxed daily timer.
+
+        `CoordinatorEntity` hard-codes `should_poll = False`, so nothing else would ever
+        call `async_update()` and the entity's state would stay "unknown" forever.
+        """
+        await super().async_added_to_hass()
+        await self.async_update()
+        self.async_write_ha_state()
+        self.async_on_remove(
+            async_track_time_interval(
+                self.hass, self.__async_check_for_update, timedelta(seconds=FIRMWARE_CHECK_INTERVAL_S)
+            )
+        )
+
+    async def __async_check_for_update(self, _now: object) -> None:
+        await self.async_update()
+        self.async_write_ha_state()
 
     async def async_update(self) -> None:
         """Check for a new firmware version."""

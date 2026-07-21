@@ -2,10 +2,7 @@
 
 Reference for the UDP protocol these cameras speak on the local network.
 Reverse-engineered from the official Android app (APK decompile + native
-library disassembly) and confirmed against a real device. Only documents
-what has been directly confirmed working; see
-`custom_components/gwell_ipcam/api.py` for the reference implementation
-this integration uses.
+library disassembly) and confirmed against a real device.
 
 ## Transport
 
@@ -108,27 +105,27 @@ observe the change, not immediately after the ack.
 
 ### Confirmed settingType values
 
-| ID | Name | Values |
-|---:|---|---|
-| 0 | Alarm Switch (`remote_defence`) | 0=off, 1=on — audible alarm |
-| 1 | Buzzer | 0=off, 1-3=on, minutes duration |
-| 2 | Motion Detection Alarm | 0/1 |
-| 3 | Record Mode (`record_type`) | 0=Manual, 1=Alarm, 2=Timing |
-| 4 | Manual Record switch (`remote_record`) | 0/1 — starts/stops recording in Manual mode |
-| 8 | Video Standard (`video_format`) | 0=NTSC, 1=PAL |
-| 11 | Record Time | 0/1/2 — wire is 0-indexed, UI shows 1/2/3 min |
-| 13 | Network Type (`net_type`) | 0=Wired, 1=WiFi |
-| 14 | Volume | 0-9, 9=max |
-| 20 | Timezone | see [Timezone encoding](#timezone-encoding) |
-| 24 | Image Reverse (`image_flip`) | 0/1 |
-| 28 | Motion Sensitivity | lower = more sensitive |
+|  ID | Name                                   | Values                                        |
+| --: | -------------------------------------- | --------------------------------------------- |
+|   0 | Alarm Switch (`remote_defence`)        | 0=off, 1=on — audible alarm                   |
+|   1 | Buzzer                                 | 0=off, 1-3=on, minutes duration               |
+|   2 | Motion Detection Alarm                 | 0/1                                           |
+|   3 | Record Mode (`record_type`)            | 0=Manual, 1=Alarm, 2=Timing                   |
+|   4 | Manual Record switch (`remote_record`) | 0/1 — starts/stops recording in Manual mode   |
+|   8 | Video Standard (`video_format`)        | 0=NTSC, 1=PAL                                 |
+|  11 | Record Time                            | 0/1/2 — wire is 0-indexed, UI shows 1/2/3 min |
+|  13 | Network Type (`net_type`)              | 0=Wired, 1=WiFi                               |
+|  14 | Volume                                 | 0-9, 9=max                                    |
+|  20 | Timezone                               | see [Timezone encoding](#timezone-encoding)   |
+|  24 | Image Reverse (`image_flip`)           | 0/1                                           |
+|  28 | Motion Sensitivity                     | lower = more sensitive                        |
 
 ## Timezone encoding
 
 Timezone is not the raw UTC offset. The app's timezone picker is a wheel
 of 30 positions (whole-hour offsets from UTC-11 to UTC+12, with a handful
 of half-hour zones inserted at fixed points), and the wire value is the
-wheel's *position*, not the offset:
+wheel's _position_, not the offset:
 
 ```
 wire_value = TIMEZONE_HALF_ZONE_TABLE[wheel_position]
@@ -153,20 +150,20 @@ them up silently performs the wrong operation.
 [password_block][tag][tag-specific payload]  ->  [tag_or_related][response fields]
 ```
 
-| Feature | Request tag | Response tag | Notes |
-|---|---|---|---|
-| Record Quality — read | `0xF0` | `0xF1` | value at response offset 2, range 0-4 |
-| Record Quality — write | `0xEF` | `0xF1` (async) | **different tag from read** |
-| SD card capacity | `0x50` | `0x50` | total/free (u32 LE, ×16 = MB) at offsets 8/16; `SDcardID` (needed for format) at offset 4 |
-| Format SD card | `0x51` | `0x51` | destructive; `sd_id` = the `SDcardID` byte from the capacity response; result code at response offset 1 (80=success, 81=fail, 82=no_sd, 103=must_stop_record) |
-| Device time — read | `0x0A` | `0x0C` | year(u16 LE)/month/day/hour/minute |
-| Device time — write | `0x0B` | `0x0C` (async) | same field layout as read response |
-| Device info | `0x27` | `0x28` | version/uboot/cpu/system, see below |
-| Firmware update check | `0x1D` | `0x1E` | pure LAN, no cloud call involved |
-| WiFi scan | `0x10` | (variable) | SSID list + signal-strength array |
-| Notification account list — read | `0x16` | `0x18` | list of account IDs |
-| Notification account list — write | `0x17` | `0x18` (async) | `[0]` clears the list (not a truly empty array) |
-| Network config write | (part of the `iSetNPCSettings`-style payload, tag `0x68`) | — | see below |
+| Feature                           | Request tag                                               | Response tag   | Notes                                                                                                                                                         |
+| --------------------------------- | --------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Record Quality — read             | `0xF0`                                                    | `0xF1`         | value at response offset 2, range 0-4                                                                                                                         |
+| Record Quality — write            | `0xEF`                                                    | `0xF1` (async) | **different tag from read**                                                                                                                                   |
+| SD card capacity                  | `0x50`                                                    | `0x50`         | total/free (u32 LE, ×16 = MB) at offsets 8/16; `SDcardID` (needed for format) at offset 4                                                                     |
+| Format SD card                    | `0x51`                                                    | `0x51`         | destructive; `sd_id` = the `SDcardID` byte from the capacity response; result code at response offset 1 (80=success, 81=fail, 82=no_sd, 103=must_stop_record) |
+| Device time — read                | `0x0A`                                                    | `0x0C`         | year(u16 LE)/month/day/hour/minute                                                                                                                            |
+| Device time — write               | `0x0B`                                                    | `0x0C` (async) | same field layout as read response                                                                                                                            |
+| Device info                       | `0x27`                                                    | `0x28`         | version/uboot/cpu/system, see below                                                                                                                           |
+| Firmware update check             | `0x1D`                                                    | `0x1E`         | pure LAN, no cloud call involved                                                                                                                              |
+| WiFi scan                         | `0x10`                                                    | (variable)     | SSID list + signal-strength array                                                                                                                             |
+| Notification account list — read  | `0x16`                                                    | `0x18`         | list of account IDs                                                                                                                                           |
+| Notification account list — write | `0x17`                                                    | `0x18` (async) | `[0]` clears the list (not a truly empty array)                                                                                                               |
+| Network config write              | (part of the `iSetNPCSettings`-style payload, tag `0x68`) | —              | see below                                                                                                                                                     |
 
 ### Device info response
 
@@ -199,12 +196,12 @@ sequenceDiagram
     Cam-->>C: ack (structurally accepted; not independently\nverifiable beyond re-authenticating)
 ```
 
-- `password_block(old)`: the usual auth block, keyed on the *current*
+- `password_block(old)`: the usual auth block, keyed on the _current_
   password.
 - `hash(new)`: the same password-hashing function as authentication,
-  applied to the *new* password.
+  applied to the _new_ password.
 - The RTSP-style digest field is plain `MD5("admin:HIipCamera:" +
-  new_password)`.
+new_password)`.
 - `enc(new, ...)`: the new password itself, null-padded to 32 bytes,
   DES-ECB **encrypted** (not decrypted, unlike every other DES use in
   this protocol) in 8-byte chunks with a separate key.

@@ -9,6 +9,6 @@
 	"integration_type": "device",
 	"iot_class": "local_polling",
 	"issue_tracker": "https://github.com/LouisBrunner/ha-gwell-ipcam/issues",
-	"requirements": [],
+	"requirements": ["av"],
 	"version": "0.1.0"
 }

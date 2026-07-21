@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
 
 from .api import SETTING_DEFENCE_SWITCH, SETTING_IMAGE_FLIP, SETTING_MOTION_DETECT, SETTING_REMOTE_DEFENCE
+from .const import LOGGER
 from .coordinator import GwellIPCamCoordinator
 from .entity import GwellIPCamEntity
 
@@ -91,6 +92,7 @@ class GwellIPCamSwitch(GwellIPCamEntity[GwellIPCamCoordinator], SwitchEntity):
         await self.__set(value=False)
 
     async def __set(self, *, value: bool) -> None:
+        LOGGER.debug("User set %s to %s", self.entity_id, value)
         client = self.coordinator.config_entry.runtime_data.client
         if self.entity_description.key == _RECORD_KEY:
             await client.async_set_recording_state(enabled=value)

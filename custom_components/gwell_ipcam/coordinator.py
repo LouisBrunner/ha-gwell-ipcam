@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -12,7 +11,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .api import SETTING_REMOTE_RECORD, APIAuthError, APIError, Recording
-from .const import LOGGER, RECORDINGS_POLL_INTERVAL_S, STATE_UPDATE_INTERVAL_S
+from .const import CLOCK_DRIFT_THRESHOLD_S, LOGGER, RECORDINGS_POLL_INTERVAL_S, STATE_UPDATE_INTERVAL_S
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -31,17 +30,11 @@ class GwellIPCamState:
     storage: StorageState
     settings: dict[int, int]
     record_quality: int | None
-    fetched_at: datetime
 
     @property
     def recording(self) -> bool:
         """Whether the camera is currently recording."""
         return bool(self.settings.get(SETTING_REMOTE_RECORD, 0))
-
-    @property
-    def live_state(self) -> str:
-        """Full raw settings dump as JSON, for diagnostics/history."""
-        return json.dumps(self.settings)
 
 
 class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
@@ -67,6 +60,10 @@ class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
             camera_time = await client.async_get_camera_time()
             storage = await client.async_get_storage_state()
             record_quality = await client.async_get_record_quality()
+            if abs((dt_util.utcnow() - camera_time).total_seconds()) > CLOCK_DRIFT_THRESHOLD_S:
+                LOGGER.info("Camera clock drifted from %s, syncing", camera_time)
+                await client.async_sync_time()
+                camera_time = await client.async_get_camera_time()
         except APIAuthError as exception:
             raise ConfigEntryAuthFailed(exception) from exception
         except APIError as exception:
@@ -76,18 +73,11 @@ class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
             storage=storage,
             settings=settings,
             record_quality=record_quality,
-            fetched_at=dt_util.utcnow(),
         )
 
 
 class GwellIPCamRecordingsCoordinator(DataUpdateCoordinator[list[Recording]]):
-    """
-    Coordinator cheaply polling the recordings list to drive motion detection.
-
-    New entries appearing in the recordings list are the integration's only
-    motion signal: no video processing happens locally, we just notice the
-    camera wrote a new file and fire an event pointing at it.
-    """
+    """Polls the recordings list; new IDs are the only motion signal we have."""
 
     config_entry: GwellIPCamConfigEntry
 

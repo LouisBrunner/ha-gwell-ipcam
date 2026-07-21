@@ -1,0 +1,11 @@
+ptz:
+  target:
+    entity:
+      domain: camera
+      integration: gwell_ipcam
+  fields:
+    moves:
+      required: true
+      example: '[{"direction": "up", "steps": 5}, {"direction": "down", "steps": 6, "step_delay_ms": 150}]'
+      selector:
+        object:

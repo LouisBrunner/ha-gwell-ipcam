@@ -1,9 +1,4 @@
-"""
-Sensor platform for the Gwell IP Camera integration.
-
-Entity descriptions are declarative so the NETWORK implementation can extend
-this list without touching the platform's setup/entity plumbing.
-"""
+"""Sensor platform for the Gwell IP Camera integration."""
 
 from __future__ import annotations
 
@@ -17,7 +12,7 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfInformation
+from homeassistant.const import EntityCategory, UnitOfInformation
 
 from .api import SETTING_NET_TYPE
 from .coordinator import GwellIPCamCoordinator, GwellIPCamRecordingsCoordinator
@@ -55,6 +50,8 @@ SENSOR_DESCRIPTIONS: tuple[GwellIPCamSensorDescription, ...] = (
         key="camera_time",
         translation_key="camera_time",
         device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
         value_fn=lambda state: state.camera_time,
     ),
     GwellIPCamSensorDescription(
@@ -88,7 +85,6 @@ async def async_setup_entry(
                 GwellIPCamSensor(coordinator=data.coordinator, identity=data.identity, entity_description=description)
                 for description in SENSOR_DESCRIPTIONS
             ),
-            GwellIPCamLiveStateSensor(coordinator=data.coordinator, identity=data.identity),
             GwellIPCamRecordingsSensor(coordinator=data.recordings_coordinator, identity=data.identity),
         ]
     )
@@ -114,34 +110,6 @@ class GwellIPCamSensor(GwellIPCamEntity[GwellIPCamCoordinator], SensorEntity):
     def native_value(self) -> str | int | float | datetime | None:
         """Return the sensor's value."""
         return self.entity_description.value_fn(self.coordinator.data)
-
-
-class GwellIPCamLiveStateSensor(GwellIPCamEntity[GwellIPCamCoordinator], SensorEntity):
-    """
-    Exposes the camera's full live state, without letting it hit the recorder.
-
-    The raw state can be a sizeable JSON blob (this is what blew up the
-    London TFL integration's database). It is kept out of `native_value`
-    entirely and instead stored as an unrecorded attribute.
-    """
-
-    _attr_translation_key = "live_state"
-    _unrecorded_attributes = frozenset({"live_state"})
-
-    def __init__(self, coordinator: GwellIPCamCoordinator, identity: CameraIdentity) -> None:
-        """Initialize the sensor."""
-        super().__init__(coordinator, identity)
-        self._attr_unique_id = f"{coordinator.config_entry.unique_id}_live_state"
-
-    @property
-    def native_value(self) -> datetime:
-        """Return the last time the live state was refreshed."""
-        return self.coordinator.data.fetched_at
-
-    @property
-    def extra_state_attributes(self) -> dict[str, str]:
-        """Return the raw live state, excluded from recorder history."""
-        return {"live_state": self.coordinator.data.live_state}
 
 
 class GwellIPCamRecordingsSensor(GwellIPCamEntity[GwellIPCamRecordingsCoordinator], SensorEntity):

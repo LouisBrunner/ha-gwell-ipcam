@@ -878,8 +878,8 @@ name = "multidict"
 version = "6.7.1"
 source = { registry = "https://wheels.home-assistant.io/musllinux-index/" }
 wheels = [
-    { url = "https://wheels.home-assistant.io/musllinux-index/multidict-6.7.1-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:1892b5f20d3761814e8e22fe02a641c901bf03f1c027ed2c7919fda7f6fdbaf7" },
-    { url = "https://wheels.home-assistant.io/musllinux-index/multidict-6.7.1-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:102473247bc78bb8d86a6da9790bdc8e2cbb7e05c48a76bd6059f247acafc578" },
+    { url = "https://wheels.home-assistant.io/musllinux-index/multidict-6.7.1-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:f13f9c397524e5275f3dc5b4bc1582729778966615c2af364ae2b09151cf29bf" },
+    { url = "https://wheels.home-assistant.io/musllinux-index/multidict-6.7.1-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:42d04cb0d5d9728fde6a9d93fa7a8833df616d7ab24e20e21f19dbf6d2891eec" },
     { url = "https://wheels.home-assistant.io/musllinux-index/multidict-6.7.1-py3-none-any.whl", hash = "sha256:55d97cc6dae627efa6a6e548885712d4864b81110ac76fa4e534c03819fa4a56" },
 ]
 
@@ -1004,7 +1004,7 @@ source = { registry = "https://wheels.home-assistant.io/musllinux-index/" }
 dependencies = [
     { name = "boto3" },
     { name = "envs" },
-    { name = "pyjwt", extra = ["crypto"], marker = "extra == 'group-14-ha-gwell-ipcam-hass' or extra == 'group-14-ha-gwell-ipcam-test'" },
+    { name = "pyjwt", extra = ["crypto"] },
     { name = "requests" },
 ]
 wheels = [

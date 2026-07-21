@@ -9,6 +9,7 @@ from homeassistant.components.number import NumberEntity, NumberEntityDescriptio
 from homeassistant.const import UnitOfTime
 
 from .api import SETTING_BUZZER, SETTING_MOTION_SENSITIVITY, SETTING_VIDEO_VOLUME
+from .const import LOGGER
 from .coordinator import GwellIPCamCoordinator
 from .entity import GwellIPCamEntity
 
@@ -109,6 +110,7 @@ class GwellIPCamNumber(GwellIPCamEntity[GwellIPCamCoordinator], NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         """Write the value back to the camera."""
+        LOGGER.debug("User set %s to %s", self.entity_id, value)
         client = self.coordinator.config_entry.runtime_data.client
         if self.entity_description.setting_type is None:
             await client.async_set_record_quality(int(value))

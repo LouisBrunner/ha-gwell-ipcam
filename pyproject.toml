@@ -50,6 +50,8 @@ ignore = [
   "D107",    # __init__ docstrings on test helper classes
   "S106",    # hardcoded fake passwords/hashes in fixtures
   "S107",    # same, as function defaults
+  "EM101",   # literal exception messages in test fixtures
+  "TRY003",  # long exception messages in test fixtures
 ]
 
 [tool.pytest.ini_options]

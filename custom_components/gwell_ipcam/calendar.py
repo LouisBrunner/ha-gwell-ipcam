@@ -1,9 +1,4 @@
-"""
-Calendar platform for the Gwell IP Camera integration.
-
-Surfaces the camera's recordings (each one implies motion was detected) as
-calendar events, so they can be reviewed in HA's calendar views.
-"""
+"""Calendar platform: recordings as calendar events."""
 
 from __future__ import annotations
 
@@ -44,13 +39,15 @@ def _to_event(recording: Recording) -> CalendarEvent:
     return CalendarEvent(
         start=recording.started_at,
         end=recording.started_at + recording.duration,
-        summary="Motion recording",
+        summary="Motion recording" if recording.motion_triggered else "Manual recording",
         uid=recording.recording_id,
     )
 
 
 class GwellIPCamCalendar(GwellIPCamEntity[GwellIPCamRecordingsCoordinator], CalendarEntity):
     """Calendar of recordings for a camera."""
+
+    _attr_translation_key = "recordings"
 
     def __init__(self, coordinator: GwellIPCamRecordingsCoordinator, identity: CameraIdentity) -> None:
         """Initialize the calendar."""

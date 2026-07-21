@@ -1,9 +1,4 @@
-"""
-Image platform for the Gwell IP Camera integration.
-
-Shows a static thumbnail of the most recent recording -- distinct from the
-live camera feed -- so the last motion event can be reviewed at a glance.
-"""
+"""Image platform: static thumbnail of the most recent recording."""
 
 from __future__ import annotations
 

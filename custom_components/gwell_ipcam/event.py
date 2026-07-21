@@ -1,16 +1,11 @@
-"""
-Event platform for the Gwell IP Camera integration.
-
-Fires a HA `event` entity update whenever the recordings coordinator notices
-a new file on the camera, which is the integration's whole motion detection
-mechanism: no image processing, just noticing a new recording exists.
-"""
+"""Event platform: fires on new recordings, the integration's only motion signal."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
 from homeassistant.components.event import EventEntity
+from homeassistant.core import callback
 
 from .coordinator import GwellIPCamCoordinator
 from .entity import GwellIPCamEntity
@@ -61,10 +56,11 @@ class GwellIPCamMotionEvent(GwellIPCamEntity[GwellIPCamCoordinator], EventEntity
             self.hass.bus.async_listen(
                 EVENT_MOTION_DETECTED,
                 self.__async_handle_bus_event,
-                event_filter=lambda event: event.data.get("device_id") == device_id,
+                event_filter=callback(lambda event_data: event_data.get("device_id") == device_id),
             )
         )
 
+    @callback
     def __async_handle_bus_event(self, event: Event) -> None:
         self._trigger_event(
             EVENT_TYPE_MOTION,

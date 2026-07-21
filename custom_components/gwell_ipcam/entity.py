@@ -16,6 +16,8 @@ if TYPE_CHECKING:
 class GwellIPCamEntity[T: DataUpdateCoordinator[Any]](CoordinatorEntity[T]):
     """Base entity tying a camera's entities to its device entry."""
 
+    _attr_has_entity_name = True
+
     def __init__(self, coordinator: T, identity: CameraIdentity) -> None:
         """Initialize the entity."""
         super().__init__(coordinator)

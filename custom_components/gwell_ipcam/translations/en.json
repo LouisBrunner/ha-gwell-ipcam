@@ -2,15 +2,20 @@
 	"config": {
 		"abort": {
 			"already_configured": "This camera is already configured.",
+			"discovery_failed": "Discovery failed: {error}",
 			"no_devices_found": "No new cameras were found on the network.",
 			"reconfigure_successful": "Reconfigure successful"
 		},
 		"error": {
-			"auth": "The password was rejected by the camera.",
-			"connection": "Unable to connect to the camera.",
-			"unknown": "Unknown error occurred."
+			"auth": "The password was rejected by the camera: {error}",
+			"connection": "Unable to connect to the camera: {error}",
+			"unknown": "Unknown error: {error}"
 		},
 		"flow_title": "{name}",
+		"progress": {
+			"connecting": "Connecting to the camera…",
+			"discovering": "Finding cameras on your network…"
+		},
 		"step": {
 			"discover": {
 				"data": {
@@ -58,6 +63,31 @@
 			},
 			"sync_time": {
 				"name": "Sync time"
+			},
+			"ptz_up": {
+				"name": "Pan up"
+			},
+			"ptz_down": {
+				"name": "Pan down"
+			},
+			"ptz_left": {
+				"name": "Pan left"
+			},
+			"ptz_right": {
+				"name": "Pan right"
+			},
+			"start_conversation": {
+				"name": "Talk to camera"
+			}
+		},
+		"calendar": {
+			"recordings": {
+				"name": "Recordings"
+			}
+		},
+		"camera": {
+			"live_stream": {
+				"name": "Live stream"
 			}
 		},
 		"event": {
@@ -68,6 +98,11 @@
 		"image": {
 			"latest_recording": {
 				"name": "Latest recording"
+			}
+		},
+		"media_player": {
+			"speaker": {
+				"name": "Speaker"
 			}
 		},
 		"number": {
@@ -112,9 +147,6 @@
 		"sensor": {
 			"camera_time": {
 				"name": "Camera time"
-			},
-			"live_state": {
-				"name": "Live state"
 			},
 			"network_type": {
 				"name": "Network type",

@@ -1,9 +1,4 @@
-"""
-Custom integration to integrate Gwell IP cameras with Home Assistant.
-
-For more details about this integration, please refer to
-https://github.com/LouisBrunner/ha-gwell-ipcam
-"""
+"""Custom integration to integrate Gwell IP cameras with Home Assistant."""
 
 from __future__ import annotations
 
@@ -32,11 +27,13 @@ if TYPE_CHECKING:
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 PLATFORMS: list[Platform] = [
+    Platform.ASSIST_SATELLITE,
     Platform.BUTTON,
     Platform.CALENDAR,
     Platform.CAMERA,
     Platform.EVENT,
     Platform.IMAGE,
+    Platform.MEDIA_PLAYER,
     Platform.NUMBER,
     Platform.SELECT,
     Platform.SENSOR,
@@ -46,14 +43,7 @@ PLATFORMS: list[Platform] = [
 
 
 async def async_setup(hass: HomeAssistant, _config: ConfigType) -> bool:
-    """
-    Set up the Gwell IP Camera component.
-
-    Runs regardless of which (if any) config entries exist yet, so once at
-    least one camera has been added, every other camera on the network gets
-    picked up here too -- see discovery.py for why this can't cover the
-    very first camera on a fresh install.
-    """
+    """Set up the integration and start background camera discovery."""
 
     @callback
     def _async_start_background_discovery(*_: object) -> None:
@@ -107,6 +97,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -
     entry.async_on_unload(
         recordings_coordinator.async_add_listener(lambda: async_handle_recordings_update(hass, entry))
     )
+
+    await client.async_start_streaming()
+    entry.async_on_unload(client.async_stop_streaming)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))

@@ -10,33 +10,44 @@ from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_PORT
 from homeassistant.helpers import selector
 
 from .api import APIAuthError, APIConnectionError, APIError, CameraIdentity, DiscoveredCamera, GwellIPCamClient
-from .const import CONF_CONTACT_ID, CONF_PASSWORD_HASH, DISCOVERY_TIMEOUT_S, DOMAIN, LOGGER
+from .const import CONF_CONTACT_ID, CONF_PASSWORD_HASH, DEFAULT_PORT, DISCOVERY_TIMEOUT_S, DOMAIN, LOGGER
 
 if TYPE_CHECKING:
+    import asyncio
+
     from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
     from homeassistant.helpers.typing import DiscoveryInfoType
 
 _CONF_DEVICE = "device"
 
 
-def _password_schema() -> vol.Schema:
+def _password_schema(*, password: str = "") -> vol.Schema:
     return vol.Schema(
         {
-            vol.Required(CONF_PASSWORD): selector.TextSelector(
+            vol.Required(CONF_PASSWORD, default=password): selector.TextSelector(
                 selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD),
             ),
         },
     )
 
 
-def _manual_schema(*, host: str = "", port: int = 80, password_required: bool = True) -> vol.Schema:
+def _manual_schema(
+    *, host: str = "", port: int = DEFAULT_PORT, password: str = "", password_required: bool = True
+) -> vol.Schema:
     schema = {
         vol.Required(CONF_HOST, default=host): selector.TextSelector(),
-        vol.Required(CONF_PORT, default=port): selector.NumberSelector(
-            selector.NumberSelectorConfig(min=1, max=65535, mode=selector.NumberSelectorMode.BOX),
+        vol.Required(CONF_PORT, default=port): vol.All(
+            selector.NumberSelector(
+                selector.NumberSelectorConfig(min=1, max=65535, mode=selector.NumberSelectorMode.BOX),
+            ),
+            vol.Coerce(int),
         ),
     }
-    password_key = vol.Required(CONF_PASSWORD) if password_required else vol.Optional(CONF_PASSWORD)
+    password_key = (
+        vol.Required(CONF_PASSWORD, default=password)
+        if password_required
+        else vol.Optional(CONF_PASSWORD, default=password)
+    )
     schema[password_key] = selector.TextSelector(
         selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD),
     )
@@ -52,6 +63,40 @@ class GwellIPCamFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         """Initialize the flow."""
         self.__discovered: dict[str, DiscoveredCamera] = {}
         self.__chosen: DiscoveredCamera | None = None
+        self.__discover_task: asyncio.Task[list[DiscoveredCamera]] | None = None
+        self.__discover_error: str = ""
+        # Shared across discover_password/manual/reconfigure -- only one of them is ever
+        # in-flight per flow instance, so a single set of "connect in progress" state suffices.
+        self.__connect_task: asyncio.Task[CameraIdentity] | None = None
+        self.__connect_identity: CameraIdentity | None = None
+        self.__connect_error: _FlowError | None = None
+        self.__connect_host: str | None = None
+        self.__connect_port: int | None = None
+        self.__connect_password: str = ""
+        self.__connect_password_hash: str = ""
+
+    async def __await_connect_task(self, step_id: str) -> config_entries.ConfigFlowResult:
+        """
+        Show progress while `self.__connect_task` runs, then hand off to a `<step_id>_result` step.
+
+        The completion transition deliberately targets a step_id *different* from the progress
+        step's own -- HA's flow manager only pushes a frontend update for a completed
+        SHOW_PROGRESS_DONE when the step_id actually changes (see `_async_configure`'s
+        `async_notify_flow_changed` condition); looping back to the same step_id means the
+        frontend is never told to re-poll, and the "Connecting..." spinner never advances.
+        """
+        assert self.__connect_task is not None  # noqa: S101
+        if not self.__connect_task.done():
+            return self.async_show_progress(
+                step_id=step_id, progress_action="connecting", progress_task=self.__connect_task
+            )
+        task = self.__connect_task
+        self.__connect_task = None
+        try:
+            self.__connect_identity = await task
+        except _FlowError as exception:
+            self.__connect_error = exception
+        return self.async_show_progress_done(next_step_id=f"{step_id}_result")
 
     async def async_step_user(self, user_input: dict | None = None) -> config_entries.ConfigFlowResult:  # noqa: ARG002
         """Let the user pick between auto-discovery and manual entry."""
@@ -59,23 +104,55 @@ class GwellIPCamFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_discover(self, user_input: dict | None = None) -> config_entries.ConfigFlowResult:
         """Broadcast a discovery request and let the user pick a camera."""
-        errors: dict[str, str] = {}
-
-        if user_input is not None:
+        # HA redelivers stale menu user_input on progress-done re-entry
+        if user_input is not None and _CONF_DEVICE in user_input:
             self.__chosen = self.__discovered[user_input[_CONF_DEVICE]]
             return await self.async_step_discover_password()
+
+        if self.__discovered:
+            return self.__show_discover_form()
+
+        if self.__discover_task is None:
+            self.__discover_task = self.hass.async_create_task(
+                GwellIPCamClient.async_discover(self.hass, timeout_s=DISCOVERY_TIMEOUT_S)
+            )
+        if not self.__discover_task.done():
+            return self.async_show_progress(
+                step_id="discover",
+                progress_action="discovering",
+                progress_task=self.__discover_task,
+            )
+
+        try:
+            found = await self.__discover_task
+        except APIError as exception:
+            LOGGER.warning(exception)
+            self.__discover_error = str(exception)
+            return self.async_show_progress_done(next_step_id="discover_error")
+        finally:
+            self.__discover_task = None
 
         already_configured = {
             entry.data[CONF_CONTACT_ID] for entry in self._async_current_entries() if CONF_CONTACT_ID in entry.data
         }
-        found = await GwellIPCamClient.async_discover(self.hass, timeout_s=DISCOVERY_TIMEOUT_S)
-        self.__discovered = {
-            camera.contact_id: camera for camera in found if camera.contact_id not in already_configured
-        }
-
+        self.__discovered = {c.contact_id: c for c in found if c.contact_id not in already_configured}
         if not self.__discovered:
-            return self.async_abort(reason="no_devices_found")
+            return self.async_show_progress_done(next_step_id="discover_no_devices")
+        return self.async_show_progress_done(next_step_id="discover_result")
 
+    async def async_step_discover_result(self, user_input: dict | None = None) -> config_entries.ConfigFlowResult:
+        """Redispatch into `discover`, now that `self.__discover_task` has finished (see `__await_connect_task`)."""
+        return await self.async_step_discover(user_input)
+
+    async def async_step_discover_no_devices(self, _user_input: dict | None = None) -> config_entries.ConfigFlowResult:
+        """Dead-end step: discovery ran but found nothing new."""
+        return self.async_abort(reason="no_devices_found")
+
+    async def async_step_discover_error(self, _user_input: dict | None = None) -> config_entries.ConfigFlowResult:
+        """Dead-end step: the discovery broadcast itself failed."""
+        return self.async_abort(reason="discovery_failed", description_placeholders={"error": self.__discover_error})
+
+    def __show_discover_form(self) -> config_entries.ConfigFlowResult:
         return self.async_show_form(
             step_id="discover",
             data_schema=vol.Schema(
@@ -94,18 +171,12 @@ class GwellIPCamFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                     ),
                 },
             ),
-            errors=errors,
         )
 
     async def async_step_integration_discovery(
         self, discovery_info: DiscoveryInfoType
     ) -> config_entries.ConfigFlowResult:
-        """
-        Handle a camera found by our own periodic background broadcast (see discovery.py).
-
-        Unlike async_step_discover, host/port/contact_id/name are already
-        known here, so we skip straight to asking for the password.
-        """
+        """Handle a camera found by our own periodic background broadcast (see discovery.py)."""
         camera = DiscoveredCamera(
             host=discovery_info[CONF_HOST],
             port=discovery_info[CONF_PORT],
@@ -119,12 +190,7 @@ class GwellIPCamFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         return await self.async_step_discover_password()
 
     async def async_step_dhcp(self, discovery_info: DhcpServiceInfo) -> config_entries.ConfigFlowResult:
-        """
-        Handle a camera found via its DHCP lease (manifest.json's OUI matcher).
-
-        DHCP only gives us an IP -- contact_id has to be pulled from the
-        camera itself via our own discovery request, unicast at that IP.
-        """
+        """Handle a camera found via its DHCP lease (manifest.json's OUI matcher)."""
         camera = await GwellIPCamClient.async_discover_one(self.hass, discovery_info.ip)
         if camera is None:
             return self.async_abort(reason="no_devices_found")
@@ -137,87 +203,158 @@ class GwellIPCamFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_discover_password(self, user_input: dict | None = None) -> config_entries.ConfigFlowResult:
         """Ask for the camera's password once a discovered device is chosen."""
         assert self.__chosen is not None  # noqa: S101
-        errors: dict[str, str] = {}
+        if self.__connect_task is not None:
+            return await self.__await_connect_task(step_id="discover_password")
 
-        if user_input is not None:
-            camera = self.__chosen
-            password_hash = GwellIPCamClient.hash_password(user_input[CONF_PASSWORD])
-            try:
-                identity = await self.__check_connection(camera.host, camera.port, password_hash)
-            except _FlowError as exception:
-                errors["base"] = exception.reason
-            else:
-                return await self.__finish(
-                    host=camera.host,
-                    port=camera.port,
-                    password_hash=password_hash,
-                    identity=identity,
-                )
+        camera = self.__chosen
+        errors: dict[str, str] = {}
+        placeholders = {"name": camera.name}
+
+        if self.__connect_error is not None:
+            exception = self.__connect_error
+            self.__connect_error = None
+            errors["base"] = exception.reason
+            placeholders["error"] = exception.message
+        elif self.__connect_identity is not None:
+            identity = self.__connect_identity
+            self.__connect_identity = None
+            return await self.__finish(
+                host=camera.host, port=camera.port, password_hash=self.__connect_password_hash, identity=identity
+            )
+        elif user_input is not None:
+            self.__connect_password = user_input[CONF_PASSWORD]
+            self.__connect_password_hash = GwellIPCamClient.hash_password(self.__connect_password)
+            self.__connect_task = self.hass.async_create_task(
+                self.__check_connection(camera.host, camera.port, self.__connect_password_hash)
+            )
+            return self.async_show_progress(
+                step_id="discover_password", progress_action="connecting", progress_task=self.__connect_task
+            )
 
         return self.async_show_form(
             step_id="discover_password",
-            data_schema=_password_schema(),
-            description_placeholders={"name": self.__chosen.name},
+            data_schema=_password_schema(password=self.__connect_password),
+            description_placeholders=placeholders,
             errors=errors,
         )
 
+    async def async_step_discover_password_result(
+        self, user_input: dict | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Redispatch into `discover_password`, now that `self.__connect_task` has finished."""
+        return await self.async_step_discover_password(user_input)
+
     async def async_step_manual(self, user_input: dict | None = None) -> config_entries.ConfigFlowResult:
         """Handle manual host/port/password entry."""
+        if self.__connect_task is not None:
+            return await self.__await_connect_task(step_id="manual")
+
         errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
 
-        if user_input is not None:
-            password_hash = GwellIPCamClient.hash_password(user_input[CONF_PASSWORD])
-            try:
-                identity = await self.__check_connection(user_input[CONF_HOST], user_input[CONF_PORT], password_hash)
-            except _FlowError as exception:
-                errors["base"] = exception.reason
-            else:
-                return await self.__finish(
-                    host=user_input[CONF_HOST],
-                    port=user_input[CONF_PORT],
-                    password_hash=password_hash,
-                    identity=identity,
-                )
+        if self.__connect_error is not None:
+            exception = self.__connect_error
+            self.__connect_error = None
+            errors["base"] = exception.reason
+            placeholders["error"] = exception.message
+        elif self.__connect_identity is not None:
+            identity = self.__connect_identity
+            self.__connect_identity = None
+            assert self.__connect_host is not None  # noqa: S101
+            assert self.__connect_port is not None  # noqa: S101
+            return await self.__finish(
+                host=self.__connect_host,
+                port=self.__connect_port,
+                password_hash=self.__connect_password_hash,
+                identity=identity,
+            )
+        elif user_input is not None:
+            self.__connect_host = user_input[CONF_HOST]
+            self.__connect_port = user_input[CONF_PORT]
+            self.__connect_password = user_input[CONF_PASSWORD]
+            self.__connect_password_hash = GwellIPCamClient.hash_password(self.__connect_password)
+            self.__connect_task = self.hass.async_create_task(
+                self.__check_connection(self.__connect_host, self.__connect_port, self.__connect_password_hash)
+            )
+            return self.async_show_progress(
+                step_id="manual", progress_action="connecting", progress_task=self.__connect_task
+            )
 
-        return self.async_show_form(step_id="manual", data_schema=_manual_schema(), errors=errors)
+        return self.async_show_form(
+            step_id="manual",
+            data_schema=_manual_schema(
+                host=self.__connect_host or "",
+                port=self.__connect_port or DEFAULT_PORT,
+                password=self.__connect_password,
+            ),
+            description_placeholders=placeholders,
+            errors=errors,
+        )
+
+    async def async_step_manual_result(self, user_input: dict | None = None) -> config_entries.ConfigFlowResult:
+        """Redispatch into `manual`, now that `self.__connect_task` has finished."""
+        return await self.async_step_manual(user_input)
 
     async def async_step_reconfigure(self, user_input: dict | None = None) -> config_entries.ConfigFlowResult:
         """Let the user edit host/port/password for an existing camera."""
         entry = self._get_reconfigure_entry()
-        errors: dict[str, str] = {}
+        if self.__connect_task is not None:
+            return await self.__await_connect_task(step_id="reconfigure")
 
-        if user_input is not None:
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
+
+        if self.__connect_error is not None:
+            exception = self.__connect_error
+            self.__connect_error = None
+            errors["base"] = exception.reason
+            placeholders["error"] = exception.message
+        elif self.__connect_identity is not None:
+            identity = self.__connect_identity
+            self.__connect_identity = None
+            assert self.__connect_host is not None  # noqa: S101
+            assert self.__connect_port is not None  # noqa: S101
+            self._abort_if_unique_id_mismatch()
+            # identity.name is a synthesized placeholder; keep the user's existing title
+            return self.async_update_reload_and_abort(
+                entry,
+                title=entry.title,
+                data_updates={
+                    CONF_HOST: self.__connect_host,
+                    CONF_PORT: self.__connect_port,
+                    CONF_PASSWORD_HASH: self.__connect_password_hash,
+                    CONF_CONTACT_ID: identity.contact_id,
+                },
+            )
+        elif user_input is not None:
+            self.__connect_host = user_input[CONF_HOST]
+            self.__connect_port = user_input[CONF_PORT]
             password = user_input.get(CONF_PASSWORD)
-            password_hash = GwellIPCamClient.hash_password(password) if password else entry.data[CONF_PASSWORD_HASH]
-            try:
-                identity = await self.__check_connection(user_input[CONF_HOST], user_input[CONF_PORT], password_hash)
-            except _FlowError as exception:
-                errors["base"] = exception.reason
-            else:
-                self._abort_if_unique_id_mismatch()
-                # keep the existing title: identity.name is a synthesized
-                # placeholder (the protocol has no camera-name field), not
-                # something that should overwrite a user's chosen title
-                return self.async_update_reload_and_abort(
-                    entry,
-                    title=entry.title,
-                    data_updates={
-                        CONF_HOST: user_input[CONF_HOST],
-                        CONF_PORT: user_input[CONF_PORT],
-                        CONF_PASSWORD_HASH: password_hash,
-                        CONF_CONTACT_ID: identity.contact_id,
-                    },
-                )
+            self.__connect_password_hash = (
+                GwellIPCamClient.hash_password(password) if password else entry.data[CONF_PASSWORD_HASH]
+            )
+            self.__connect_task = self.hass.async_create_task(
+                self.__check_connection(self.__connect_host, self.__connect_port, self.__connect_password_hash)
+            )
+            return self.async_show_progress(
+                step_id="reconfigure", progress_action="connecting", progress_task=self.__connect_task
+            )
 
         return self.async_show_form(
             step_id="reconfigure",
             data_schema=_manual_schema(
-                host=entry.data[CONF_HOST],
-                port=entry.data[CONF_PORT],
+                host=self.__connect_host or entry.data[CONF_HOST],
+                port=self.__connect_port or entry.data[CONF_PORT],
+                password="",
                 password_required=False,
             ),
+            description_placeholders=placeholders,
             errors=errors,
         )
+
+    async def async_step_reconfigure_result(self, user_input: dict | None = None) -> config_entries.ConfigFlowResult:
+        """Redispatch into `reconfigure`, now that `self.__connect_task` has finished."""
+        return await self.async_step_reconfigure(user_input)
 
     async def __check_connection(self, host: str, port: int, password_hash: str) -> CameraIdentity:
         try:
@@ -225,15 +362,15 @@ class GwellIPCamFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         except APIAuthError as exception:
             LOGGER.warning(exception)
             reason = "auth"
-            raise _FlowError(reason) from exception
+            raise _FlowError(reason, str(exception)) from exception
         except APIConnectionError as exception:
             LOGGER.warning(exception)
             reason = "connection"
-            raise _FlowError(reason) from exception
+            raise _FlowError(reason, str(exception)) from exception
         except APIError as exception:
             LOGGER.exception("Unexpected error while checking camera connection")
             reason = "unknown"
-            raise _FlowError(reason) from exception
+            raise _FlowError(reason, str(exception)) from exception
 
     async def __finish(
         self, *, host: str, port: int, password_hash: str, identity: CameraIdentity
@@ -253,9 +390,10 @@ class GwellIPCamFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class _FlowError(Exception):
-    """Internal signal carrying the translation key of a failed step."""
+    """Internal signal carrying the translation key and detail message of a failed step."""
 
-    def __init__(self, reason: str) -> None:
-        """Initialize with the translation key to show as an error."""
+    def __init__(self, reason: str, message: str) -> None:
+        """Initialize with the translation key and human-readable detail."""
         super().__init__(reason)
         self.reason = reason
+        self.message = message

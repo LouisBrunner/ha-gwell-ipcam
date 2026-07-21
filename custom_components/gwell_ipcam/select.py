@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
 
 from .api import SETTING_RECORD_TIME, SETTING_RECORD_TYPE, SETTING_VIDEO_FORMAT
+from .const import LOGGER
 from .coordinator import GwellIPCamCoordinator
 from .entity import GwellIPCamEntity
 
@@ -89,6 +90,7 @@ class GwellIPCamSelect(GwellIPCamEntity[GwellIPCamCoordinator], SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         """Write the selected option back to the camera."""
+        LOGGER.debug("User set %s to %s", self.entity_id, option)
         value_to_option = self.entity_description.value_to_option
         value = next(v for v, o in value_to_option.items() if o == option)
         client = self.coordinator.config_entry.runtime_data.client

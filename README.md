@@ -14,6 +14,11 @@ Integrate Gwell IP cameras into Home Assistant (compatible with HACS).
 
 See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the reverse-engineered wire protocol reference.
 
+## Known limitations
+
+- TODO: `record_plan_time` (settingType 5, the schedule behind "Record mode: Timing") is not decoded or exposed. It's a raw bitmask on the wire that was never reverse-engineered.
+- TODO: recording playbacks
+
 ## Development
 
 Start the devcontainer with:

@@ -5,7 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
+from homeassistant.helpers import entity_registry as er
 
+from .api import map_ptz_direction
+from .const import DOMAIN, LOGGER
 from .coordinator import GwellIPCamCoordinator
 from .entity import GwellIPCamEntity
 
@@ -31,7 +34,14 @@ BUTTON_DESCRIPTIONS: tuple[ButtonEntityDescription, ...] = (
         translation_key="sync_time",
         entity_registry_enabled_default=False,
     ),
+    ButtonEntityDescription(key="ptz_up", translation_key="ptz_up"),
+    ButtonEntityDescription(key="ptz_down", translation_key="ptz_down"),
+    ButtonEntityDescription(key="ptz_left", translation_key="ptz_left"),
+    ButtonEntityDescription(key="ptz_right", translation_key="ptz_right"),
+    ButtonEntityDescription(key="start_conversation", translation_key="start_conversation"),
 )
+
+_PTZ_KEYS = {"ptz_up", "ptz_down", "ptz_left", "ptz_right"}
 
 
 async def async_setup_entry(
@@ -67,7 +77,27 @@ class GwellIPCamButton(GwellIPCamEntity[GwellIPCamCoordinator], ButtonEntity):
     async def async_press(self) -> None:
         """Handle the button press."""
         client = self.coordinator.config_entry.runtime_data.client
-        match self.entity_description.key:
+        key = self.entity_description.key
+        LOGGER.debug("User pressed %s (%s)", self.entity_id, key)
+
+        if key in _PTZ_KEYS:
+            direction = map_ptz_direction(key.removeprefix("ptz_"), self.coordinator.data.settings)
+            await client.async_ptz(direction)
+            return
+
+        if key == "start_conversation":
+            registry = er.async_get(self.hass)
+            unique_id = f"{self.coordinator.config_entry.unique_id}_assist_satellite"
+            entity_id = registry.async_get_entity_id("assist_satellite", DOMAIN, unique_id)
+            if entity_id is not None:
+                await self.hass.services.async_call(
+                    "assist_satellite",
+                    "start_conversation",
+                    {"entity_id": entity_id, "start_message": "", "preannounce": False},
+                )
+            return
+
+        match key:
             case "format_sd_card":
                 await client.async_format_sd_card()
             case "quick_record":
@@ -75,5 +105,5 @@ class GwellIPCamButton(GwellIPCamEntity[GwellIPCamCoordinator], ButtonEntity):
             case "sync_time":
                 await client.async_sync_time()
             case _:
-                raise NotImplementedError(self.entity_description.key)
+                raise NotImplementedError(key)
         await self.coordinator.async_request_refresh()

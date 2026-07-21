@@ -1,11 +1,4 @@
-"""
-Motion detection derived from newly-appeared recordings.
-
-No video processing happens here: the recordings coordinator polls the
-camera's recordings list every RECORDINGS_POLL_INTERVAL_S seconds, and any
-recording ID we haven't seen before is treated as a motion event pointing at
-the corresponding media library entry.
-"""
+"""Fires a motion event for each newly-seen recording ID."""
 
 from __future__ import annotations
 
@@ -13,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.helpers import entity_registry as er
 
-from .const import DOMAIN
+from .const import DOMAIN, LOGGER
 from .media_source import media_source_identifier
 
 if TYPE_CHECKING:
@@ -40,16 +33,15 @@ def async_handle_recordings_update(hass: HomeAssistant, entry: GwellIPCamConfigE
     for recording in recordings:
         if recording.recording_id not in unseen_ids:
             continue
-        hass.bus.async_fire(
-            EVENT_MOTION_DETECTED,
-            {
-                "device_id": _device_id(hass, entry),
-                "recording_id": recording.recording_id,
-                "started_at": recording.started_at.isoformat(),
-                "duration_s": recording.duration.total_seconds(),
-                "media_content_id": media_source_identifier(entry, recording.recording_id),
-            },
-        )
+        event_data = {
+            "device_id": _device_id(hass, entry),
+            "recording_id": recording.recording_id,
+            "started_at": recording.started_at.isoformat(),
+            "duration_s": recording.duration.total_seconds(),
+            "media_content_id": media_source_identifier(entry, recording.recording_id),
+        }
+        LOGGER.debug("Firing %s: %s", EVENT_MOTION_DETECTED, event_data)
+        hass.bus.async_fire(EVENT_MOTION_DETECTED, event_data)
 
 
 def _device_id(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -> str | None:

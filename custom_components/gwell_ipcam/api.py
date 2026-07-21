@@ -1,18 +1,12 @@
-"""
-API client for Gwell (Sricam/ieGeek) IP cameras.
-
-Wire protocol reverse-engineered against a real device; see docs/PROTOCOL.md
-for the full reference. Adapted from a standalone research client: every
-network call opens its own short-lived UDP socket on an ephemeral local
-port (never the camera's own port -- binding to a fixed port would collide
-across multiple configured cameras) and blocks with short timeouts, so it
-always runs via hass.async_add_executor_job, never on the event loop.
-"""
+"""API client for Gwell (Sricam/ieGeek) IP cameras. See docs/PROTOCOL.md for the wire format."""
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import functools
 import hashlib
+import ipaddress
 import random
 import socket
 import struct
@@ -24,6 +18,11 @@ from typing import TYPE_CHECKING
 from cryptography.hazmat.decrepit.ciphers.algorithms import TripleDES
 from cryptography.hazmat.primitives.ciphers import Cipher, modes
 from homeassistant.util import dt as dt_util
+
+from .const import DEFAULT_PORT, LOGGER, RTSP_PATH
+from .fallback import FrameCache
+from .rtsp import RTSPSession, TalkSession
+from .rtsp_proxy import RTSPProxyServer
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -48,14 +47,41 @@ SETTING_DEFENCE_SWITCH = 43
 
 RECORD_TYPE_MANUAL = 0
 
+PTZ_DIRECTIONS = ("up", "down", "left", "right")
+_PTZ_MIRROR = {"left": "right", "right": "left"}
+
+
+def map_ptz_direction(direction: str, settings: dict[int, int]) -> str:
+    """
+    Map an on-screen PTZ direction to the camera's own motor direction.
+
+    Confirmed live: with `SETTING_IMAGE_FLIP` on, commanding the raw wire direction `left`
+    visibly moves the camera right on screen (the motor's frame of reference doesn't follow
+    the image flip); tilt is unaffected. Pan only, and only while the setting is enabled.
+    """
+    if settings.get(SETTING_IMAGE_FLIP, 0) and direction in _PTZ_MIRROR:
+        return _PTZ_MIRROR[direction]
+    return direction
+
+
 _WEAK_PASSWORD_MIN_DIGITS = 6
 _NUMERIC_PIN_MAX_DIGITS = 10
 
-# Not real settings: cycle to random values on a timer regardless of device
-# state (firmware memory-reuse artifact).
+# Not real settings: cycle to random values on a timer (firmware artifact).
 _NOISE_SETTING_IDS = {10, 22, 23, 33, 39, 42, 45, 51}
 
 _DISCOVERY_PORT = 25143
+# Once a "keep the latest of possibly-several replies" call gets its first response, only wait
+# this much longer for a fresher one instead of the full timeout -- the camera essentially never
+# sends a second, better reply in practice, so waiting out the full window every call is wasted time.
+_RESPONSE_SETTLE_S = 0.3
+
+
+def _log_hex(data: bytes) -> str:
+    """Hex-encode for logging, dropping trailing zero-padding that just clutters the line."""
+    return data.rstrip(b"\x00").hex()
+
+
 _DES_KEY_MESG = bytes.fromhex("8c270a3eb9ec4d0e")
 _DES_KEY_PWD_CHUNK = bytes.fromhex("9cae6a5ae1fcb082")
 _ENTRY_PWD_XOR_TABLE = (
@@ -72,7 +98,7 @@ _ENTRY_PWD_XOR_TABLE = (
 )
 _FORMAT_RESULT_CODES = {80: "success", 81: "fail", 82: "no_sd", 103: "must_stop_record"}
 
-# The protocol has no per-device model-name field; only a version string.
+# No wire field carries a model name, only a version string.
 _DEFAULT_MODEL_NAME = "Sricam/ieGeek IP Camera"
 _RECORDINGS_LOOKBACK = timedelta(days=30)
 
@@ -86,15 +112,7 @@ class APIConnectionError(APIError):
 
 
 class APIAuthError(APIError):
-    """
-    The password hash was rejected by the camera.
-
-    The wire protocol has no explicit auth-failure response: a rejected
-    password just gets silent timeouts, indistinguishable from
-    unreachability by itself. Auth is inferred by pairing a successful
-    discovery reply (proves the host is up) with a timed-out authenticated
-    request (proves the password wasn't accepted).
-    """
+    """Password rejected -- inferred from a reachable host ignoring authenticated requests."""
 
 
 @dataclass(frozen=True)
@@ -170,16 +188,7 @@ def _entry_pwd_hash(password: str) -> int:
 
 
 def entry_password(password: str) -> int:
-    """
-    Wire password int for a plaintext password.
-
-    Short numeric PINs (digits only, <10 chars, no leading '0') are used
-    as-is; everything else goes through the one-way hash above. This makes
-    hash_password() idempotent on its own output: re-feeding a previously
-    hashed value (always digits, <=9 of them, from `% 999999999`) back
-    through this function returns it unchanged, which is what lets a
-    config entry store only the hash and still reconnect with it directly.
-    """
+    """Wire password int. Short numeric PINs pass through as-is; idempotent on its own hashed output."""
     if password.isdigit() and len(password) < _NUMERIC_PIN_MAX_DIGITS and password[0] != "0":
         return int(password)
     return _entry_pwd_hash(password)
@@ -205,6 +214,7 @@ def _discover(
     sock.bind(("0.0.0.0", 0))  # noqa: S104 -- must receive broadcast replies on any interface
     sock.settimeout(0.2)
     try:
+        LOGGER.debug("UDP send to %s:%s: %s", broadcast_ip, port, _log_hex(bytes(request)))
         sock.sendto(bytes(request), (broadcast_ip, port))
         found: dict[str, DiscoveredCamera] = {}
         deadline = time.monotonic() + timeout
@@ -213,10 +223,11 @@ def _discover(
                 data, addr = sock.recvfrom(4096)
             except TimeoutError:
                 continue
+            LOGGER.debug("UDP recv from %s: %s", addr, _log_hex(data))
             if len(data) == 96 and struct.unpack_from(">I", data, 0)[0] == 2:  # noqa: PLR2004
                 contact_id = struct.unpack_from(">I", data, 16)[0]
                 found[addr[0]] = DiscoveredCamera(
-                    host=addr[0], port=51880, contact_id=str(contact_id), name=f"IPCam-{contact_id}"
+                    host=addr[0], port=DEFAULT_PORT, contact_id=str(contact_id), name=f"IPCam-{contact_id}"
                 )
         return list(found.values())
     finally:
@@ -242,21 +253,31 @@ class _RecFileEntry:
     duration_s: int | None
 
 
+def _resolve_ipv4(host: str) -> str:
+    """Resolve `host` to a dotted-quad IPv4 address, needed since dst_id is derived from its last octet."""
+    try:
+        ipaddress.IPv4Address(host)
+    except ValueError:
+        return socket.gethostbyname(host)
+    return host
+
+
 class _SricamProtocol:
     """Synchronous wire client for one request/response exchange. Blocking -- always run via an executor."""
 
     def __init__(self, host: str, port: int, password_hash: str) -> None:
         self._host = host
-        self._port = port
+        self._port = int(port)
         self._password_int = entry_password(password_hash)
         self._our_src_id = 100
-        self._dst_id = int(host.rsplit(".", maxsplit=1)[-1])
+        self._dst_id = int(_resolve_ipv4(host).split(".")[-1])
         self._sock: socket.socket | None = None
 
     def __enter__(self) -> Self:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._sock.bind(("0.0.0.0", 0))  # noqa: S104 -- ephemeral port, any local interface  # noqa: S104 -- must receive broadcast replies on any interface
+        # the camera only replies when the client's source port matches its own port -- confirmed live
+        self._sock.bind(("0.0.0.0", self._port))  # noqa: S104 -- any local interface
         self._sock.settimeout(0.2)
         return self
 
@@ -272,18 +293,8 @@ class _SricamProtocol:
         return self._sock
 
     def _password_block(self, key8: bytes) -> bytes:
-        """
-        DES-ECB decrypt via `cryptography`'s TripleDES with a tripled key (K1=K2=K3).
-
-        `cryptography` dropped standalone single-DES; EDE with all three keys
-        equal is mathematically identical to single DES with that key (the
-        middle decrypt undoes the first encrypt, leaving one pass) -- verified
-        byte-for-byte against pycryptodome's `DES` for both protocol keys.
-        Avoids depending on pycryptodome, which has no armv7 (32-bit ARM)
-        wheel, a platform HAOS supports; `cryptography` is already mandatory
-        for Home Assistant itself.
-        """
-        decryptor = Cipher(TripleDES(key8 * 3), modes.ECB()).decryptor()  # noqa: S305 -- the camera protocol mandates DES-ECB, not our choice
+        """DES-ECB via TripleDES(key*3) -- cryptography dropped plain DES; K1=K2=K3 is equivalent."""
+        decryptor = Cipher(TripleDES(key8 * 3), modes.ECB()).decryptor()  # noqa: S305 -- protocol mandates DES-ECB
         plaintext = struct.pack("<II", self._password_int, _rand3())
         return decryptor.update(plaintext) + decryptor.finalize()
 
@@ -295,28 +306,52 @@ class _SricamProtocol:
         header[3] = self._our_src_id & 0xFF
         struct.pack_into("<I", header, 4, msgid)
         struct.pack_into("<I", header, 8, len(payload))
-        self._sock_or_raise().sendto(bytes(header) + payload, (self._host, self._port))
+        packet = bytes(header) + payload
+        LOGGER.debug("UDP send to %s:%s: %s", self._host, self._port, _log_hex(packet))
+        self._sock_or_raise().sendto(packet, (self._host, self._port))
 
     def _send_extended(self, cmd_payload: bytes, msgid: int) -> None:
         self._send(self._password_block(_DES_KEY_MESG) + cmd_payload, msgid, subcmd=0x0B)
+
+    def _recv(self) -> bytes | None:
+        """Receive one datagram (or None on the socket's 0.2s timeout), logging it either way."""
+        try:
+            data, addr = self._sock_or_raise().recvfrom(4096)
+        except TimeoutError:
+            return None
+        LOGGER.debug("UDP recv from %s: %s", addr, _log_hex(data))
+        return data
+
+    def __drain_settling(self, duration: float) -> list[bytes]:
+        """Like `_drain`, but stop shortly after the first packet instead of always waiting `duration`."""
+        packets = []
+        deadline = time.monotonic() + duration
+        settling = False
+        while time.monotonic() < deadline:
+            data = self._recv()
+            if data is None:
+                continue
+            packets.append(data)
+            # See get_record_quality() -- only start the settle countdown once, so the camera's
+            # own unrelated periodic broadcasts on this port can't keep renewing it forever.
+            if not settling:
+                settling = True
+                deadline = min(deadline, time.monotonic() + _RESPONSE_SETTLE_S)
+        return packets
 
     def _drain(self, duration: float) -> list[bytes]:
         packets = []
         deadline = time.monotonic() + duration
         while time.monotonic() < deadline:
-            try:
-                data, _addr = self._sock_or_raise().recvfrom(4096)
-            except TimeoutError:
+            data = self._recv()
+            if data is None:
                 continue
             packets.append(data)
         return packets
 
     def _flush_stale(self) -> None:
-        while True:
-            try:
-                self._sock_or_raise().recvfrom(4096)
-            except TimeoutError:
-                return
+        while self._recv() is not None:
+            pass
 
     @staticmethod
     def _msgid() -> int:
@@ -328,9 +363,8 @@ class _SricamProtocol:
         self._send(self._password_block(_DES_KEY_MESG) + bytes(4), msgid, subcmd=0x03)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            try:
-                data, _addr = self._sock_or_raise().recvfrom(4096)
-            except TimeoutError:
+            data = self._recv()
+            if data is None:
                 continue
             if data[0] == 0x60 and len(data) > 200:  # noqa: PLR2004
                 payload = data[12:]
@@ -355,14 +389,20 @@ class _SricamProtocol:
         self._flush_stale()
         self._send_extended(bytes([0xF0, 0x00, 0x00, 0x00, 0x00, 0x00]), self._msgid())
         deadline = time.monotonic() + timeout
+        settling = False
         latest = None
         while time.monotonic() < deadline:
-            try:
-                data, _addr = self._sock_or_raise().recvfrom(4096)
-            except TimeoutError:
+            data = self._recv()
+            if data is None:
                 continue
             if len(data) >= 15 and data[0] == 0x60 and data[12] == 0xF1:  # noqa: PLR2004
                 latest = data[14]
+                # The camera keeps re-broadcasting these values on its own regardless of our
+                # request, so only start the settle countdown once (on the *first* match) --
+                # otherwise a steady stream of unrelated broadcasts keeps renewing it forever.
+                if not settling:
+                    settling = True
+                    deadline = min(deadline, time.monotonic() + _RESPONSE_SETTLE_S)
         return latest
 
     def set_record_quality(self, value: int) -> None:
@@ -374,9 +414,8 @@ class _SricamProtocol:
         self._send_extended(bytes([0x50, 0x00, 0x00, 0x00]), self._msgid())
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            try:
-                data, _addr = self._sock_or_raise().recvfrom(4096)
-            except TimeoutError:
+            data = self._recv()
+            if data is None:
                 continue
             if len(data) >= 33 and data[0] == 0x60 and data[12] == 0x50:  # noqa: PLR2004
                 payload = data[12:]
@@ -396,16 +435,20 @@ class _SricamProtocol:
         self._flush_stale()
         self._send_extended(bytes([0x0A, 0, 0, 0, 0, 0, 0, 0, 0]), self._msgid())
         deadline = time.monotonic() + timeout
+        settling = False
         latest = None
         while time.monotonic() < deadline:
-            try:
-                data, _addr = self._sock_or_raise().recvfrom(4096)
-            except TimeoutError:
+            data = self._recv()
+            if data is None:
                 continue
             if len(data) >= 22 and data[0] == 0x60 and data[12] == 0x0C:  # noqa: PLR2004
                 p = data[12:]
                 year = struct.unpack_from("<H", p, 4)[0]
-                latest = datetime(year, p[6], p[7], p[8], p[9])  # noqa: DTZ001 -- naive camera-local time, localized by the caller
+                latest = datetime(year, p[6], p[7], p[8], p[9])  # noqa: DTZ001 -- naive camera-local time
+                # See get_record_quality() -- only start the settle countdown once.
+                if not settling:
+                    settling = True
+                    deadline = min(deadline, time.monotonic() + _RESPONSE_SETTLE_S)
         return latest
 
     def set_device_time(self, dt: datetime, timeout: float = 3.0) -> None:
@@ -419,9 +462,8 @@ class _SricamProtocol:
         self._send(payload, self._msgid(), subcmd=0x03)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            try:
-                data, _addr = self._sock_or_raise().recvfrom(4096)
-            except TimeoutError:
+            data = self._recv()
+            if data is None:
                 continue
             if len(data) == 48 and data[0] == 0x60 and data[12] == 0x28:  # noqa: PLR2004
                 p = data[12:]
@@ -436,9 +478,8 @@ class _SricamProtocol:
         self._send(payload, self._msgid(), subcmd=0x03)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            try:
-                data, _addr = self._sock_or_raise().recvfrom(4096)
-            except TimeoutError:
+            data = self._recv()
+            if data is None:
                 continue
             if len(data) == 24 and data[0] == 0x60 and data[12] == 0x1E:  # noqa: PLR2004
                 p = data[12:]
@@ -466,7 +507,7 @@ class _SricamProtocol:
         self._send(payload, self._msgid(), subcmd=0x0B)
         candidates = [
             p
-            for p in self._drain(timeout)
+            for p in self.__drain_settling(timeout)
             if p[:1] == b"\x60" and not (len(p) > 200 and p[12:14] == b"\x02\x01")  # noqa: PLR2004
         ]
         best = max(candidates, key=len, default=None)
@@ -499,6 +540,40 @@ class _SricamProtocol:
 # -- async client used by the integration -------------------------------------
 
 
+# _SricamProtocol binds its local UDP socket to the camera's own port (the camera only replies to
+# that exact source port), so two cameras sharing a port can't have overlapping sessions -- serialize
+# per port to avoid an "Address already in use" race between concurrently-polled cameras.
+_port_locks: dict[int, asyncio.Lock] = {}
+
+
+def _lock_for_port(port: int) -> asyncio.Lock:
+    lock = _port_locks.get(port)
+    if lock is None:
+        lock = asyncio.Lock()
+        _port_locks[port] = lock
+    return lock
+
+
+async def _run_blocking[T](hass: HomeAssistant, fn: Callable[[], T], *, port: int | None = None) -> T:
+    """
+    Run a blocking call in the executor, mapping any raw exception into our own hierarchy.
+
+    `port` should be set whenever `fn` binds a local UDP socket to a fixed port (i.e. any
+    `_SricamProtocol` session) so concurrent calls sharing that port are serialized instead of
+    racing for the bind. Discovery uses an ephemeral local port and doesn't need it.
+    """
+    context = _lock_for_port(port) if port is not None else contextlib.nullcontext()
+    async with context:
+        try:
+            return await hass.async_add_executor_job(fn)
+        except APIError:
+            raise
+        except OSError as err:
+            raise APIConnectionError(str(err)) from err
+        except Exception as err:
+            raise APIError(str(err)) from err
+
+
 class GwellIPCamClient:
     """Async-facing client for a single Gwell IP camera; wraps the sync protocol client above."""
 
@@ -509,23 +584,60 @@ class GwellIPCamClient:
         self._port = port
         self._password_hash = password_hash
         self._quick_record_saved_type: int | None = None
+        self._rtsp_session = RTSPSession(host)
+        self._frame_cache = FrameCache()
+        self._rtsp_proxy = RTSPProxyServer(self._rtsp_session, self._frame_cache)
 
     async def _run[T](self, op: Callable[[_SricamProtocol], T]) -> T:
         def call() -> T:
             with _SricamProtocol(self._host, self._port, self._password_hash) as client:
                 return op(client)
 
-        return await self._hass.async_add_executor_job(call)
+        return await _run_blocking(self._hass, call, port=self._port)
+
+    @property
+    def rtsp_session(self) -> RTSPSession:
+        """The shared upstream RTSP session (for the assist_satellite mic feed)."""
+        return self._rtsp_session
+
+    @property
+    def frame_cache(self) -> FrameCache:
+        """The last-known-good frame, used as a background for the offline fallback image."""
+        return self._frame_cache
+
+    async def async_start_streaming(self) -> None:
+        """
+        Open the shared RTSP session and start the local header-fixing proxy.
+
+        Kept open for the config entry's lifetime -- continuous streaming, not opened
+        on demand per viewer.
+        """
+        await self._rtsp_session.start()
+        await self._rtsp_proxy.start()
+
+    async def async_stop_streaming(self) -> None:
+        """Stop the local proxy and close the shared RTSP session."""
+        await self._rtsp_proxy.stop()
+        await self._rtsp_session.stop()
+
+    async def async_ptz(self, direction: str, *, steps: int = 1, step_delay_ms: int = 200) -> None:
+        """Send `steps` PTZ nudges in `direction` (already mapped for image-reverse by the caller)."""
+        await self._rtsp_session.ptz(direction, steps=steps, step_delay_ms=step_delay_ms)
+
+    async def async_talk(self, pcm16_8khz_mono: bytes) -> None:
+        """Push 8kHz mono PCM16 audio to the camera's speaker over a fresh talk session."""
+        async with TalkSession(self._host) as talk:
+            await talk.send_pcm16(pcm16_8khz_mono)
 
     @staticmethod
     async def async_discover(hass: HomeAssistant, timeout_s: float) -> list[DiscoveredCamera]:
         """Broadcast a UDP discovery request and collect camera responses."""
-        return await hass.async_add_executor_job(functools.partial(_discover, timeout=timeout_s))
+        return await _run_blocking(hass, functools.partial(_discover, timeout=timeout_s))
 
     @staticmethod
     async def async_discover_one(hass: HomeAssistant, host: str, timeout_s: float = 2.0) -> DiscoveredCamera | None:
         """Query a single known host for its contact_id (e.g. to fill in what DHCP discovery can't provide)."""
-        found = await hass.async_add_executor_job(functools.partial(_discover, broadcast_ip=host, timeout=timeout_s))
+        found = await _run_blocking(hass, functools.partial(_discover, broadcast_ip=host, timeout=timeout_s))
         return found[0] if found else None
 
     @staticmethod
@@ -539,13 +651,7 @@ class GwellIPCamClient:
         return await GwellIPCamClient(hass=hass, host=host, port=port, password_hash=password_hash).async_get_identity()
 
     async def async_get_identity(self) -> CameraIdentity:
-        """
-        Fetch the camera's identity (contact ID, model, firmware).
-
-        No wire field carries a human-friendly camera name, so one is
-        synthesized from the contact ID -- rename the device in HA
-        afterward if desired.
-        """
+        """Fetch the camera's identity. Name is synthesized -- no wire field carries one."""
         found = await self.async_discover_one(self._hass, self._host)
         if found is None:
             msg = f"no discovery reply from {self._host}"
@@ -553,7 +659,7 @@ class GwellIPCamClient:
         contact_id = found.contact_id
         info = await self._run(lambda c: c.get_device_info())
         if info is None:
-            msg = f"camera at {self._host} reachable but did not respond to an authenticated request"
+            msg = f"camera at {self._host} did not respond to an authenticated request"
             raise APIAuthError(msg)
         return CameraIdentity(
             contact_id=contact_id,
@@ -563,7 +669,7 @@ class GwellIPCamClient:
         )
 
     async def async_get_camera_time(self) -> datetime:
-        """Fetch the camera's internal clock, localized to HA's configured timezone (camera keeps no tz of its own)."""
+        """Fetch the camera's clock, localized to HA's configured timezone (camera keeps no tz of its own)."""
         naive = await self._run(lambda c: c.get_device_time())
         if naive is None:
             msg = "no response from camera"
@@ -593,13 +699,7 @@ class GwellIPCamClient:
         return dump.clean_values()
 
     async def async_set_setting(self, setting_type: int, value: int) -> None:
-        """
-        Write a single settingType/value pair.
-
-        Applies with several seconds of latency on the camera; a missing
-        immediate ack doesn't necessarily mean the write failed, so this
-        doesn't raise on it -- the next poll settles the real value.
-        """
+        """Write a settingType/value pair. Applies with latency; a missing ack doesn't mean it failed."""
         await self._run(lambda c: c.set_setting(setting_type, value))
 
     async def async_set_recording_state(self, *, enabled: bool) -> None:
@@ -607,11 +707,7 @@ class GwellIPCamClient:
         await self.async_set_setting(SETTING_REMOTE_RECORD, 1 if enabled else 0)
 
     async def async_toggle_quick_record(self) -> bool:
-        """
-        Start recording in Manual mode, remembering the prior mode; on the next call, stop and restore it.
-
-        State is held in memory only and does not survive a HA restart.
-        """
+        """Start recording in Manual mode, remembering the prior mode; next call stops and restores it."""
         if self._quick_record_saved_type is None:
             settings = await self.async_get_settings()
             self._quick_record_saved_type = settings.get(SETTING_RECORD_TYPE, RECORD_TYPE_MANUAL)
@@ -648,32 +744,17 @@ class GwellIPCamClient:
         return [_to_recording(entry) for entry in entries]
 
     async def async_stream_recording(self, recording_id: str) -> AsyncIterator[bytes]:  # noqa: ARG002
-        """
-        Stream a recorded clip's contents from the camera.
-
-        Stub: no wire format for fetching a recording's video bytes has
-        been reverse-engineered yet.
-        """
+        """Stub: no wire format for fetching a recording's video bytes exists yet."""
         empty: tuple[bytes, ...] = ()
         for chunk in empty:
             yield chunk
 
     async def async_get_live_stream_url(self) -> str | None:
-        """
-        Return a URL for the live feed, or None if unavailable.
-
-        Stub: RTSP/live-stream session establishment (the "CALLING"
-        transport) has never been confirmed working against a real camera.
-        """
-        return None
+        """Return the local proxy's RTSP URL, or None if streaming hasn't been started yet."""
+        return f"rtsp://127.0.0.1:{self._rtsp_proxy.port}{RTSP_PATH}"
 
     async def async_get_latest_recording_thumbnail(self) -> bytes | None:
-        """
-        Fetch a thumbnail image for the most recent recording.
-
-        Stub: no wire format for fetching a thumbnail has been
-        reverse-engineered yet.
-        """
+        """Stub: no wire format for fetching a thumbnail exists yet."""
         return None
 
     async def async_get_firmware_info(self) -> FirmwareInfo:
@@ -690,12 +771,7 @@ class GwellIPCamClient:
         )
 
     async def async_install_firmware_update(self) -> None:
-        """
-        Trigger a firmware update install on the camera.
-
-        Stub: the wire format for triggering an install (as opposed to
-        just checking for one) has never been reverse-engineered.
-        """
+        """Stub: triggering an install has never been reverse-engineered, only checking for one."""
         msg = "firmware installation is not supported by this integration yet"
         raise APIError(msg)
 
