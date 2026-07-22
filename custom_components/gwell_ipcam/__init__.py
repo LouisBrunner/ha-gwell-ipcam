@@ -16,7 +16,7 @@ from .const import CONF_PASSWORD_HASH, DISCOVERY_INTERVAL_S, DOMAIN
 from .coordinator import GwellIPCamCoordinator, GwellIPCamRecordingsCoordinator
 from .data import GwellIPCamData
 from .discovery import async_discover_and_trigger_flows
-from .events import async_handle_recordings_update
+from .motion_events import async_handle_recordings_update
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -32,12 +32,12 @@ PLATFORMS: list[Platform] = [
     Platform.CALENDAR,
     Platform.CAMERA,
     Platform.EVENT,
-    Platform.IMAGE,
     Platform.MEDIA_PLAYER,
     Platform.NUMBER,
     Platform.SELECT,
     Platform.SENSOR,
     Platform.SWITCH,
+    Platform.TIME,
     Platform.UPDATE,
 ]
 
@@ -70,7 +70,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -
         host=entry.data[CONF_HOST],
         port=entry.data[CONF_PORT],
         password_hash=entry.data[CONF_PASSWORD_HASH],
+        entry_id=entry.entry_id,
     )
+    await client.async_load_quick_record_state()
 
     try:
         identity = await client.async_get_identity()
@@ -94,6 +96,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -
     await coordinator.async_config_entry_first_refresh()
     await recordings_coordinator.async_config_entry_first_refresh()
 
+    # Seed the baseline before listening, or every recording already on the SD card looks "new" on this boot.
+    entry.runtime_data.known_recording_ids = {r.recording_id for r in recordings_coordinator.data or []}
     entry.async_on_unload(
         recordings_coordinator.async_add_listener(lambda: async_handle_recordings_update(hass, entry))
     )

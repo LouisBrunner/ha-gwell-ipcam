@@ -9,3 +9,27 @@ ptz:
       example: '[{"direction": "up", "steps": 5}, {"direction": "down", "steps": 6, "step_delay_ms": 150}]'
       selector:
         object:
+          multiple: true
+          label_field: direction
+          fields:
+            direction:
+              required: true
+              selector:
+                select:
+                  options:
+                    - up
+                    - down
+                    - left
+                    - right
+            steps:
+              selector:
+                number:
+                  min: 1
+                  max: 50
+                  mode: box
+            step_delay_ms:
+              selector:
+                number:
+                  min: 0
+                  max: 2000
+                  mode: box

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from homeassistant.components.event import EventEntity
+from homeassistant.components.event import EventDeviceClass, EventEntity
 from homeassistant.core import callback
 
 from .coordinator import GwellIPCamCoordinator
 from .entity import GwellIPCamEntity
-from .events import EVENT_MOTION_DETECTED
+from .motion_events import EVENT_MOTION_DETECTED
 
 if TYPE_CHECKING:
     from homeassistant.core import Event, HomeAssistant
@@ -41,6 +41,8 @@ class GwellIPCamMotionEvent(GwellIPCamEntity[GwellIPCamCoordinator], EventEntity
     """Fires when the camera's recordings list gains a new (motion) entry."""
 
     _attr_translation_key = "motion"
+    _attr_icon = "mdi:motion-play"
+    _attr_device_class = EventDeviceClass.MOTION
 
     def __init__(self, coordinator: GwellIPCamCoordinator, identity: CameraIdentity) -> None:
         """Initialize the event entity."""

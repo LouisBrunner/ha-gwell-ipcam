@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -11,13 +12,12 @@ from homeassistant.const import UnitOfTime
 from .api import SETTING_BUZZER, SETTING_MOTION_SENSITIVITY, SETTING_VIDEO_VOLUME
 from .const import LOGGER
 from .coordinator import GwellIPCamCoordinator
-from .entity import GwellIPCamEntity
+from .entity import GwellIPCamDescribedEntity
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-    from .api import CameraIdentity
     from .data import GwellIPCamConfigEntry
 
 _RECORD_QUALITY_KEY = "record_quality"  # special-cased: separate iExtendedCmd wire path, not a settingType
@@ -39,6 +39,7 @@ NUMBER_DESCRIPTIONS: tuple[GwellIPCamNumberDescription, ...] = (
         native_max_value=9,
         native_step=1,
         mode=NumberMode.SLIDER,
+        icon="mdi:volume-high",
     ),
     GwellIPCamNumberDescription(
         key="buzzer_duration",
@@ -49,7 +50,7 @@ NUMBER_DESCRIPTIONS: tuple[GwellIPCamNumberDescription, ...] = (
         native_step=1,
         native_unit_of_measurement=UnitOfTime.MINUTES,
         mode=NumberMode.SLIDER,
-        entity_registry_enabled_default=False,
+        icon="mdi:bell-ring",
     ),
     GwellIPCamNumberDescription(
         key="motion_sensitivity",
@@ -59,6 +60,7 @@ NUMBER_DESCRIPTIONS: tuple[GwellIPCamNumberDescription, ...] = (
         native_max_value=10,  # exact upper bound unconfirmed; lower = more sensitive
         native_step=1,
         mode=NumberMode.SLIDER,
+        icon="mdi:tune",
     ),
     GwellIPCamNumberDescription(
         key=_RECORD_QUALITY_KEY,
@@ -68,6 +70,7 @@ NUMBER_DESCRIPTIONS: tuple[GwellIPCamNumberDescription, ...] = (
         native_max_value=4,
         native_step=1,
         mode=NumberMode.SLIDER,
+        icon="mdi:quality-high",
     ),
 )
 
@@ -85,21 +88,10 @@ async def async_setup_entry(
     )
 
 
-class GwellIPCamNumber(GwellIPCamEntity[GwellIPCamCoordinator], NumberEntity):
+class GwellIPCamNumber(
+    GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPCamNumberDescription], NumberEntity
+):
     """Number entity driven by a declarative description."""
-
-    entity_description: GwellIPCamNumberDescription
-
-    def __init__(
-        self,
-        coordinator: GwellIPCamCoordinator,
-        identity: CameraIdentity,
-        entity_description: GwellIPCamNumberDescription,
-    ) -> None:
-        """Initialize the number entity."""
-        super().__init__(coordinator, identity)
-        self.entity_description = entity_description
-        self._attr_unique_id = f"{coordinator.config_entry.unique_id}_{entity_description.key}"
 
     @property
     def native_value(self) -> float | None:
@@ -110,10 +102,11 @@ class GwellIPCamNumber(GwellIPCamEntity[GwellIPCamCoordinator], NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         """Write the value back to the camera."""
-        LOGGER.debug("User set %s to %s", self.entity_id, value)
+        uid = uuid.uuid4().hex[:8]
+        LOGGER.debug("[%s] User set %s to %s", uid, self.entity_id, value)
         client = self.coordinator.config_entry.runtime_data.client
         if self.entity_description.setting_type is None:
-            await client.async_set_record_quality(int(value))
+            await client.async_set_record_quality(int(value), uid=uid)
         else:
-            await client.async_set_setting(self.entity_description.setting_type, int(value))
+            await client.async_set_setting(self.entity_description.setting_type, int(value), uid=uid)
         await self.coordinator.async_request_refresh()

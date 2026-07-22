@@ -4,6 +4,7 @@
 			"already_configured": "This camera is already configured.",
 			"discovery_failed": "Discovery failed: {error}",
 			"no_devices_found": "No new cameras were found on the network.",
+			"reauth_successful": "Re-authentication was successful",
 			"reconfigure_successful": "Reconfigure successful"
 		},
 		"error": {
@@ -37,6 +38,12 @@
 				},
 				"title": "Camera connection"
 			},
+			"reauth_confirm": {
+				"data": {
+					"password": "Password"
+				},
+				"title": "Reconnect to the camera"
+			},
 			"reconfigure": {
 				"data": {
 					"host": "Host",
@@ -58,15 +65,6 @@
 			"format_sd_card": {
 				"name": "Format SD card"
 			},
-			"quick_record": {
-				"name": "Quick record"
-			},
-			"sync_time": {
-				"name": "Sync time"
-			},
-			"ptz_up": {
-				"name": "Pan up"
-			},
 			"ptz_down": {
 				"name": "Pan down"
 			},
@@ -76,13 +74,22 @@
 			"ptz_right": {
 				"name": "Pan right"
 			},
+			"ptz_up": {
+				"name": "Pan up"
+			},
+			"quick_record": {
+				"name": "Quick record"
+			},
 			"start_conversation": {
 				"name": "Talk to camera"
+			},
+			"sync_time": {
+				"name": "Sync time"
 			}
 		},
 		"calendar": {
-			"recordings": {
-				"name": "Recordings"
+			"recordings_calendar": {
+				"name": "Recordings calendar"
 			}
 		},
 		"camera": {
@@ -93,11 +100,6 @@
 		"event": {
 			"motion": {
 				"name": "Motion"
-			}
-		},
-		"image": {
-			"latest_recording": {
-				"name": "Latest recording"
 			}
 		},
 		"media_player": {
@@ -163,6 +165,9 @@
 			},
 			"sd_card_space_used": {
 				"name": "SD card space used"
+			},
+			"sd_card_usage": {
+				"name": "SD card usage"
 			}
 		},
 		"switch": {
@@ -172,14 +177,22 @@
 			"defence_switch": {
 				"name": "Defence active"
 			},
-			"image_flip": {
-				"name": "Image flip"
-			},
 			"motion_detect": {
 				"name": "Motion detection"
 			},
 			"record": {
 				"name": "Record"
+			},
+			"upside_down": {
+				"name": "Mounted upside down"
+			}
+		},
+		"time": {
+			"record_schedule_end": {
+				"name": "Record schedule end"
+			},
+			"record_schedule_start": {
+				"name": "Record schedule start"
 			}
 		},
 		"update": {

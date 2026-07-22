@@ -49,12 +49,7 @@ class GwellIPCamFirmwareUpdate(GwellIPCamEntity[GwellIPCamCoordinator], UpdateEn
         self._attr_installed_version = identity.firmware_version
 
     async def async_added_to_hass(self) -> None:
-        """
-        Check for updates once now, then on a relaxed daily timer.
-
-        `CoordinatorEntity` hard-codes `should_poll = False`, so nothing else would ever
-        call `async_update()` and the entity's state would stay "unknown" forever.
-        """
+        """Check for updates once now and on a daily timer (CoordinatorEntity hard-codes should_poll=False)."""
         await super().async_added_to_hass()
         await self.async_update()
         self.async_write_ha_state()

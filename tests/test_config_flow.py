@@ -8,12 +8,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT
+from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_PORT
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 from custom_components.gwell_ipcam.api import APIAuthError, APIConnectionError, CameraIdentity, DiscoveredCamera
-from custom_components.gwell_ipcam.const import CONF_CONTACT_ID, DEFAULT_PORT, DOMAIN
+from custom_components.gwell_ipcam.const import CONF_CONTACT_ID, CONF_PASSWORD_HASH, DEFAULT_PORT, DOMAIN
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -49,8 +49,13 @@ async def test_manual_flow_creates_entry(hass: HomeAssistant) -> None:
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["title"] == "IPCam-1283250"
-    assert result["data"][CONF_CONTACT_ID] == "1283250"
-    assert result["data"][CONF_HOST] == "192.168.0.66"
+    assert result["data"] == {
+        CONF_HOST: "192.168.0.66",
+        CONF_PORT: 51880,
+        CONF_PASSWORD_HASH: "636734832",
+        CONF_CONTACT_ID: "1283250",
+        CONF_NAME: "IPCam-1283250",
+    }
 
 
 async def test_manual_flow_auth_error_keeps_form_values(hass: HomeAssistant) -> None:
@@ -140,8 +145,13 @@ async def test_dhcp_flow_creates_entry(hass: HomeAssistant) -> None:
         result = await _resolve_progress(hass, result)
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"][CONF_HOST] == "192.168.0.66"
-    assert result["data"][CONF_CONTACT_ID] == "1283250"
+    assert result["data"] == {
+        CONF_HOST: "192.168.0.66",
+        CONF_PORT: 51880,
+        CONF_PASSWORD_HASH: "636734832",
+        CONF_CONTACT_ID: "1283250",
+        CONF_NAME: "IPCam-1283250",
+    }
 
 
 async def test_dhcp_flow_aborts_when_camera_not_reachable(hass: HomeAssistant) -> None:

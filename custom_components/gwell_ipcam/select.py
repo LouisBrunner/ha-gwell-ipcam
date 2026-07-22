@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -10,13 +11,12 @@ from homeassistant.components.select import SelectEntity, SelectEntityDescriptio
 from .api import SETTING_RECORD_TIME, SETTING_RECORD_TYPE, SETTING_VIDEO_FORMAT
 from .const import LOGGER
 from .coordinator import GwellIPCamCoordinator
-from .entity import GwellIPCamEntity
+from .entity import GwellIPCamDescribedEntity
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-    from .api import CameraIdentity
     from .data import GwellIPCamConfigEntry
 
 
@@ -35,6 +35,7 @@ SELECT_DESCRIPTIONS: tuple[GwellIPCamSelectDescription, ...] = (
         setting_type=SETTING_RECORD_TYPE,
         options=["manual", "alarm", "timing"],
         value_to_option={0: "manual", 1: "alarm", 2: "timing"},
+        icon="mdi:record-circle-outline",
     ),
     GwellIPCamSelectDescription(
         key="video_format",
@@ -42,12 +43,14 @@ SELECT_DESCRIPTIONS: tuple[GwellIPCamSelectDescription, ...] = (
         setting_type=SETTING_VIDEO_FORMAT,
         options=["ntsc", "pal"],
         value_to_option={0: "ntsc", 1: "pal"},
+        icon="mdi:television-classic",
     ),
     GwellIPCamSelectDescription(
         key="record_time",
         translation_key="record_time",
         setting_type=SETTING_RECORD_TIME,
         options=["1", "2", "3"],
+        icon="mdi:timer-outline",
         value_to_option={0: "1", 1: "2", 2: "3"},  # wire is 0-indexed, UI shows minutes
     ),
 )
@@ -66,21 +69,10 @@ async def async_setup_entry(
     )
 
 
-class GwellIPCamSelect(GwellIPCamEntity[GwellIPCamCoordinator], SelectEntity):
+class GwellIPCamSelect(
+    GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPCamSelectDescription], SelectEntity
+):
     """Select entity driven by a declarative description."""
-
-    entity_description: GwellIPCamSelectDescription
-
-    def __init__(
-        self,
-        coordinator: GwellIPCamCoordinator,
-        identity: CameraIdentity,
-        entity_description: GwellIPCamSelectDescription,
-    ) -> None:
-        """Initialize the select entity."""
-        super().__init__(coordinator, identity)
-        self.entity_description = entity_description
-        self._attr_unique_id = f"{coordinator.config_entry.unique_id}_{entity_description.key}"
 
     @property
     def current_option(self) -> str | None:
@@ -90,9 +82,10 @@ class GwellIPCamSelect(GwellIPCamEntity[GwellIPCamCoordinator], SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         """Write the selected option back to the camera."""
-        LOGGER.debug("User set %s to %s", self.entity_id, option)
+        uid = uuid.uuid4().hex[:8]
+        LOGGER.debug("[%s] User set %s to %s", uid, self.entity_id, option)
         value_to_option = self.entity_description.value_to_option
         value = next(v for v, o in value_to_option.items() if o == option)
         client = self.coordinator.config_entry.runtime_data.client
-        await client.async_set_setting(self.entity_description.setting_type, value)
+        await client.async_set_setting(self.entity_description.setting_type, value, uid=uid)
         await self.coordinator.async_request_refresh()

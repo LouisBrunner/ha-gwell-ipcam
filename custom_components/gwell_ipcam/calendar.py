@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from homeassistant.components.calendar import CalendarEntity, CalendarEvent
+from homeassistant.util import dt as dt_util
 
 from .coordinator import GwellIPCamRecordingsCoordinator
 from .entity import GwellIPCamEntity
+from .media_source import media_source_identifier
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -35,11 +37,19 @@ async def async_setup_entry(
     )
 
 
-def _to_event(recording: Recording) -> CalendarEvent:
+def _to_event(entry: GwellIPCamConfigEntry, source_entity_id: str, recording: Recording) -> CalendarEvent:
+    media_content_id = media_source_identifier(entry, recording.recording_id)
+    description = (
+        f"Recording ID: {recording.recording_id}\n"
+        f"Duration: {recording.duration}\n"
+        f"Media: {media_content_id}\n"
+        f"Source: {source_entity_id}"
+    )
     return CalendarEvent(
         start=recording.started_at,
         end=recording.started_at + recording.duration,
         summary="Motion recording" if recording.motion_triggered else "Manual recording",
+        description=description,
         uid=recording.recording_id,
     )
 
@@ -47,7 +57,8 @@ def _to_event(recording: Recording) -> CalendarEvent:
 class GwellIPCamCalendar(GwellIPCamEntity[GwellIPCamRecordingsCoordinator], CalendarEntity):
     """Calendar of recordings for a camera."""
 
-    _attr_translation_key = "recordings"
+    _attr_translation_key = "recordings_calendar"
+    _attr_icon = "mdi:calendar-clock"
 
     def __init__(self, coordinator: GwellIPCamRecordingsCoordinator, identity: CameraIdentity) -> None:
         """Initialize the calendar."""
@@ -56,11 +67,13 @@ class GwellIPCamCalendar(GwellIPCamEntity[GwellIPCamRecordingsCoordinator], Cale
 
     @property
     def event(self) -> CalendarEvent | None:
-        """Return the most recent recording, if any."""
-        recordings = self.coordinator.data or []
-        if not recordings:
+        """Return the currently in-progress recording, if any (all our events are in the past otherwise)."""
+        now = dt_util.utcnow()
+        ongoing = [r for r in self.coordinator.data or [] if r.started_at <= now <= r.started_at + r.duration]
+        if not ongoing:
             return None
-        return _to_event(max(recordings, key=lambda recording: recording.started_at))
+        latest = max(ongoing, key=lambda recording: recording.started_at)
+        return _to_event(self.coordinator.config_entry, self.entity_id, latest)
 
     async def async_get_events(
         self,
@@ -70,4 +83,5 @@ class GwellIPCamCalendar(GwellIPCamEntity[GwellIPCamRecordingsCoordinator], Cale
     ) -> list[CalendarEvent]:
         """Return recordings that fall within the requested range."""
         recordings = self.coordinator.data or []
-        return [_to_event(recording) for recording in recordings if start_date <= recording.started_at <= end_date]
+        entry = self.coordinator.config_entry
+        return [_to_event(entry, self.entity_id, r) for r in recordings if start_date <= r.started_at <= end_date]

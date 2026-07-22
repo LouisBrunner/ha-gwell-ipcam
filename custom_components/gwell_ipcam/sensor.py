@@ -12,11 +12,11 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import EntityCategory, UnitOfInformation
+from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfInformation
 
 from .api import SETTING_NET_TYPE
 from .coordinator import GwellIPCamCoordinator, GwellIPCamRecordingsCoordinator
-from .entity import GwellIPCamEntity
+from .entity import GwellIPCamDescribedEntity, GwellIPCamEntity
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -35,15 +35,38 @@ class GwellIPCamSensorDescription(SensorEntityDescription):
     """Describes a sensor sourced from the general state coordinator."""
 
     value_fn: Callable[[GwellIPCamState], str | int | float | datetime | None]
+    extra_attributes_fn: Callable[[GwellIPCamState], dict[str, int]] | None = None
+
+
+def _sd_card_percent_used(state: GwellIPCamState) -> float | None:
+    total = state.storage.total_mb
+    if not total:
+        return None
+    return round(state.storage.used_mb / total * 100, 1)
+
+
+def _sd_card_mb_attributes(state: GwellIPCamState) -> dict[str, int]:
+    return {"used_mb": state.storage.used_mb, "total_mb": state.storage.total_mb}
 
 
 SENSOR_DESCRIPTIONS: tuple[GwellIPCamSensorDescription, ...] = (
+    GwellIPCamSensorDescription(
+        key="sd_card_usage",
+        translation_key="sd_card_usage",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=PERCENTAGE,
+        icon="mdi:harddisk",
+        value_fn=_sd_card_percent_used,
+        extra_attributes_fn=_sd_card_mb_attributes,
+    ),
     GwellIPCamSensorDescription(
         key="sd_card_space_used",
         translation_key="sd_card_space_used",
         device_class=SensorDeviceClass.DATA_SIZE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfInformation.MEGABYTES,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
         value_fn=lambda state: state.storage.used_mb,
     ),
     GwellIPCamSensorDescription(
@@ -52,6 +75,7 @@ SENSOR_DESCRIPTIONS: tuple[GwellIPCamSensorDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
+        icon="mdi:clock-outline",
         value_fn=lambda state: state.camera_time,
     ),
     GwellIPCamSensorDescription(
@@ -60,6 +84,8 @@ SENSOR_DESCRIPTIONS: tuple[GwellIPCamSensorDescription, ...] = (
         device_class=SensorDeviceClass.DATA_SIZE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfInformation.MEGABYTES,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
         value_fn=lambda state: state.storage.total_mb,
     ),
     GwellIPCamSensorDescription(
@@ -67,6 +93,7 @@ SENSOR_DESCRIPTIONS: tuple[GwellIPCamSensorDescription, ...] = (
         translation_key="network_type",
         device_class=SensorDeviceClass.ENUM,
         options=["wifi", "wired"],
+        icon="mdi:network",
         value_fn=lambda state: "wifi" if state.settings.get(SETTING_NET_TYPE) else "wired",
     ),
 )
@@ -90,32 +117,31 @@ async def async_setup_entry(
     )
 
 
-class GwellIPCamSensor(GwellIPCamEntity[GwellIPCamCoordinator], SensorEntity):
+class GwellIPCamSensor(
+    GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPCamSensorDescription], SensorEntity
+):
     """Generic sensor driven by a declarative description."""
-
-    entity_description: GwellIPCamSensorDescription
-
-    def __init__(
-        self,
-        coordinator: GwellIPCamCoordinator,
-        identity: CameraIdentity,
-        entity_description: GwellIPCamSensorDescription,
-    ) -> None:
-        """Initialize the sensor."""
-        super().__init__(coordinator, identity)
-        self.entity_description = entity_description
-        self._attr_unique_id = f"{coordinator.config_entry.unique_id}_{entity_description.key}"
 
     @property
     def native_value(self) -> str | int | float | datetime | None:
         """Return the sensor's value."""
         return self.entity_description.value_fn(self.coordinator.data)
 
+    @property
+    def extra_state_attributes(self) -> dict[str, int] | None:
+        """Return additional attributes, if the description defines any."""
+        if self.entity_description.extra_attributes_fn is None:
+            return None
+        return self.entity_description.extra_attributes_fn(self.coordinator.data)
+
 
 class GwellIPCamRecordingsSensor(GwellIPCamEntity[GwellIPCamRecordingsCoordinator], SensorEntity):
     """Exposes the list of recorded files as JSON, without hitting the recorder."""
 
     _attr_translation_key = "recordings"
+    _attr_icon = "mdi:filmstrip-box-multiple"
+    # MEASUREMENT, not TOTAL_INCREASING: the count can drop as old recordings roll off the lookback window.
+    _attr_state_class = SensorStateClass.MEASUREMENT
     _unrecorded_attributes = frozenset({"recordings"})
 
     def __init__(self, coordinator: GwellIPCamRecordingsCoordinator, identity: CameraIdentity) -> None:
@@ -129,10 +155,10 @@ class GwellIPCamRecordingsSensor(GwellIPCamEntity[GwellIPCamRecordingsCoordinato
         return len(self.coordinator.data or [])
 
     @property
-    def extra_state_attributes(self) -> dict[str, str]:
-        """Return the recordings list as JSON, excluded from recorder history."""
+    def extra_state_attributes(self) -> dict[str, str | int | float | bool]:
+        """Return the latest recording's details (readable on the device page) plus the full list as JSON."""
         recordings = self.coordinator.data or []
-        return {
+        attributes: dict[str, str | int | float | bool] = {
             "recordings": json.dumps(
                 [
                     {
@@ -145,3 +171,12 @@ class GwellIPCamRecordingsSensor(GwellIPCamEntity[GwellIPCamRecordingsCoordinato
                 ]
             ),
         }
+        if recordings:
+            latest = max(recordings, key=lambda recording: recording.started_at)
+            attributes |= {
+                "latest_recording_id": latest.recording_id,
+                "latest_started_at": latest.started_at.isoformat(),
+                "latest_duration_s": latest.duration.total_seconds(),
+                "latest_motion_triggered": latest.motion_triggered,
+            }
+        return attributes

@@ -1,18 +1,15 @@
 # yaml-language-server: $schema=https://schemas.lbrunner.net/home-assistant/configuration.schema.json
 
-# https://www.home-assistant.io/integrations/default_config/
 default_config:
 
-# https://www.home-assistant.io/integrations/homeassistant/
 homeassistant:
   debug: true
 
-# https://www.home-assistant.io/integrations/http/
 http:
   server_port: 8124
 
-# https://www.home-assistant.io/integrations/logger/
 logger:
   default: info
   logs:
     custom_components.gwell_ipcam: debug
+    custom_components.gwell_ipcam.wire: warning

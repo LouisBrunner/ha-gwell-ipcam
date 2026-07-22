@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity import EntityDescription
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
 
 from .const import DOMAIN
@@ -28,3 +29,15 @@ class GwellIPCamEntity[T: DataUpdateCoordinator[Any]](CoordinatorEntity[T]):
             model=identity.model,
             sw_version=identity.firmware_version,
         )
+
+
+class GwellIPCamDescribedEntity[T: DataUpdateCoordinator[Any], DescT: EntityDescription](GwellIPCamEntity[T]):
+    """Base for entities driven by a declarative `EntityDescription`; derives the unique ID from its key."""
+
+    entity_description: DescT
+
+    def __init__(self, coordinator: T, identity: CameraIdentity, entity_description: DescT) -> None:
+        """Initialize the entity from its coordinator and description."""
+        super().__init__(coordinator, identity)
+        self.entity_description = entity_description
+        self._attr_unique_id = f"{coordinator.config_entry.unique_id}_{entity_description.key}"

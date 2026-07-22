@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from homeassistant.components.media_player import MediaPlayerEntity, MediaPlayerEntityFeature, MediaPlayerState
+from homeassistant.components.media_player import (
+    MediaPlayerDeviceClass,
+    MediaPlayerEntity,
+    MediaPlayerEntityFeature,
+    MediaPlayerState,
+)
 
 from .audio import async_media_id_to_pcm16_8k
 from .const import LOGGER
@@ -39,6 +44,8 @@ class GwellIPCamMediaPlayer(GwellIPCamEntity[GwellIPCamCoordinator], MediaPlayer
     """Pushes arbitrary media (TTS, announcements) to the camera's speaker as talk-back audio."""
 
     _attr_translation_key = "speaker"
+    _attr_icon = "mdi:bullhorn"
+    _attr_device_class = MediaPlayerDeviceClass.SPEAKER
     _attr_supported_features = MediaPlayerEntityFeature.PLAY_MEDIA
     _attr_state = MediaPlayerState.IDLE
 

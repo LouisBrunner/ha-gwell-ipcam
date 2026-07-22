@@ -3,6 +3,9 @@
 from logging import Logger, getLogger
 
 LOGGER: Logger = getLogger(__package__)
+# Raw UDP/RTSP frame dumps only -- set this logger to WARNING to silence the wire-level spam
+# while keeping LOGGER's higher-level one-line summaries at debug.
+WIRE_LOGGER: Logger = getLogger(f"{__package__}.wire")
 
 DOMAIN = "gwell_ipcam"
 
@@ -16,8 +19,7 @@ DISCOVERY_INTERVAL_S = 900
 STATE_UPDATE_INTERVAL_S = 300
 RECORDINGS_POLL_INTERVAL_S = 60
 FIRMWARE_CHECK_INTERVAL_S = 86400
-# The camera's clock has minute (not second) resolution, so give drift-correction enough
-# margin to not trigger on rounding alone.
+# Above the camera's minute-resolution clock, so rounding alone doesn't trigger a resync.
 CLOCK_DRIFT_THRESHOLD_S = 90
 
 RTSP_PORT = 554

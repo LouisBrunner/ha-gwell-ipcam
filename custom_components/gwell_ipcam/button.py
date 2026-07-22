@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
@@ -10,38 +11,43 @@ from homeassistant.helpers import entity_registry as er
 from .api import map_ptz_direction
 from .const import DOMAIN, LOGGER
 from .coordinator import GwellIPCamCoordinator
-from .entity import GwellIPCamEntity
+from .entity import GwellIPCamDescribedEntity
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-    from .api import CameraIdentity
     from .data import GwellIPCamConfigEntry
+
+_PTZ_KEYS = {"ptz_up", "ptz_down", "ptz_left", "ptz_right"}
+_QUICK_RECORD_KEY = "quick_record"
 
 BUTTON_DESCRIPTIONS: tuple[ButtonEntityDescription, ...] = (
     ButtonEntityDescription(
         key="format_sd_card",
         translation_key="format_sd_card",
         entity_registry_enabled_default=False,
+        icon="mdi:sd",
     ),
     ButtonEntityDescription(
-        key="quick_record",
+        key=_QUICK_RECORD_KEY,
         translation_key="quick_record",
+        icon="mdi:record-circle",
     ),
     ButtonEntityDescription(
         key="sync_time",
         translation_key="sync_time",
         entity_registry_enabled_default=False,
+        icon="mdi:clock-check-outline",
     ),
-    ButtonEntityDescription(key="ptz_up", translation_key="ptz_up"),
-    ButtonEntityDescription(key="ptz_down", translation_key="ptz_down"),
-    ButtonEntityDescription(key="ptz_left", translation_key="ptz_left"),
-    ButtonEntityDescription(key="ptz_right", translation_key="ptz_right"),
-    ButtonEntityDescription(key="start_conversation", translation_key="start_conversation"),
+    ButtonEntityDescription(key="ptz_up", translation_key="ptz_up", icon="mdi:arrow-up-bold"),
+    ButtonEntityDescription(key="ptz_down", translation_key="ptz_down", icon="mdi:arrow-down-bold"),
+    ButtonEntityDescription(key="ptz_left", translation_key="ptz_left", icon="mdi:arrow-left-bold"),
+    ButtonEntityDescription(key="ptz_right", translation_key="ptz_right", icon="mdi:arrow-right-bold"),
+    ButtonEntityDescription(
+        key="start_conversation", translation_key="start_conversation", icon="mdi:microphone-message"
+    ),
 )
-
-_PTZ_KEYS = {"ptz_up", "ptz_down", "ptz_left", "ptz_right"}
 
 
 async def async_setup_entry(
@@ -60,25 +66,33 @@ async def async_setup_entry(
     )
 
 
-class GwellIPCamButton(GwellIPCamEntity[GwellIPCamCoordinator], ButtonEntity):
+class GwellIPCamButton(
+    GwellIPCamDescribedEntity[GwellIPCamCoordinator, ButtonEntityDescription], ButtonEntity
+):
     """Button triggering a one-off action on the camera."""
 
-    def __init__(
-        self,
-        coordinator: GwellIPCamCoordinator,
-        identity: CameraIdentity,
-        entity_description: ButtonEntityDescription,
-    ) -> None:
-        """Initialize the button."""
-        super().__init__(coordinator, identity)
-        self.entity_description = entity_description
-        self._attr_unique_id = f"{coordinator.config_entry.unique_id}_{entity_description.key}"
+    @property
+    def icon(self) -> str | None:
+        """Quick record swaps icon to show whether a session is currently active."""
+        if self.entity_description.key != _QUICK_RECORD_KEY:
+            return super().icon
+        client = self.coordinator.config_entry.runtime_data.client
+        return "mdi:stop-circle" if client.quick_record_active else "mdi:record-circle"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, bool] | None:
+        """Quick record exposes whether a session is currently active, since the button has no on/off state."""
+        if self.entity_description.key != _QUICK_RECORD_KEY:
+            return None
+        client = self.coordinator.config_entry.runtime_data.client
+        return {"active": client.quick_record_active}
 
     async def async_press(self) -> None:
         """Handle the button press."""
         client = self.coordinator.config_entry.runtime_data.client
         key = self.entity_description.key
-        LOGGER.debug("User pressed %s (%s)", self.entity_id, key)
+        uid = uuid.uuid4().hex[:8]
+        LOGGER.debug("[%s] User pressed %s (%s)", uid, self.entity_id, key)
 
         if key in _PTZ_KEYS:
             direction = map_ptz_direction(key.removeprefix("ptz_"), self.coordinator.data.settings)
@@ -93,17 +107,19 @@ class GwellIPCamButton(GwellIPCamEntity[GwellIPCamCoordinator], ButtonEntity):
                 await self.hass.services.async_call(
                     "assist_satellite",
                     "start_conversation",
-                    {"entity_id": entity_id, "start_message": "", "preannounce": False},
+                    # An empty start_message still goes through TTS synthesis upstream (not skipped),
+                    # which can fail on empty text -- use a real, minimal message instead.
+                    {"entity_id": entity_id, "start_message": "Listening", "preannounce": False},
                 )
             return
 
         match key:
             case "format_sd_card":
-                await client.async_format_sd_card()
+                await client.async_format_sd_card(uid=uid)
             case "quick_record":
-                await client.async_toggle_quick_record()
+                await client.async_toggle_quick_record(uid=uid)
             case "sync_time":
-                await client.async_sync_time()
+                await client.async_sync_time(uid=uid)
             case _:
                 raise NotImplementedError(key)
         await self.coordinator.async_request_refresh()

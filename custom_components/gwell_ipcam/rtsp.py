@@ -1,11 +1,4 @@
-"""
-Shared RTSP session for a Gwell IP camera: one upstream connection, fanned out to every consumer.
-
-The camera exposes a mostly-standard RTSP server on port 554 plus vendor RTSP extensions for
-PTZ (`SET_PARAMETER` + `Content-type: ptzCmd:...`) and push-to-talk (`USER_CMD_SET` +
-`Content-type: AudioCtlCmd:OPEN/CLOSE`, then raw PCM16 pushed as interleaved binary frames).
-See docs/PROTOCOL.md for how this was reverse-engineered and live-verified.
-"""
+"""Shared RTSP session for a Gwell IP camera, with vendor extensions for PTZ/talk; see docs/PROTOCOL.md."""
 
 from __future__ import annotations
 
@@ -15,7 +8,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .const import LOGGER, RTSP_PATH, RTSP_PORT, TALK_SAMPLE_RATE_HZ
+from .const import LOGGER, RTSP_PATH, RTSP_PORT, TALK_SAMPLE_RATE_HZ, WIRE_LOGGER
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -26,16 +19,24 @@ _INTERLEAVE_MARKER = 0x24
 _INTERLEAVE_HEADER_BYTES = 4
 _REQUEST_TIMEOUT_S = 8.0
 _RECONNECT_INTERVAL_S = 15.0
+_CANCEL_TIMEOUT_S = 5.0
+
+
+async def cancel_and_wait(task: asyncio.Task) -> None:
+    """Cancel `task` and wait for it, bounded so a stuck task can never hang shutdown indefinitely."""
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+        await asyncio.wait_for(task, timeout=_CANCEL_TIMEOUT_S)
 
 VIDEO_CHANNELS = (0, 1)
 AUDIO_CHANNELS = (2, 3)
 
-# The vendor's own client typo -- confirmed real, baked into the camera's compiled command table.
+# "DWON" is the vendor's own typo, baked into the camera's compiled command table.
 _PTZ_WIRE = {"up": "UP", "down": "DWON", "left": "LEFT", "right": "RIGHT"}
 
 _TALK_CHANNEL = 0x02
 _TALK_GAP_BYTES = 12
-_TALK_CHUNK_BYTES = 320  # 160 samples @ 8kHz mono PCM16 == 20ms, confirmed-good pacing unit
+_TALK_CHUNK_BYTES = 320  # 160 samples @ 8kHz mono PCM16 == 20ms
 
 
 class RTSPError(Exception):
@@ -44,8 +45,6 @@ class RTSPError(Exception):
 
 @dataclass
 class _Response:
-    """A parsed RTSP response (status line + headers + optional body)."""
-
     status_line: str
     headers: dict[str, str]
     body: str
@@ -64,7 +63,6 @@ class _Response:
 
     @property
     def ok(self) -> bool:
-        """Whether this is a 200 OK response."""
         return " 200 " in f" {self.status_line} "
 
     @property
@@ -94,7 +92,8 @@ async def _simple_request(
     headers = {"CSeq": str(cseq), "User-Agent": _USER_AGENT, **(extra_headers or {})}
     header_text = "\r\n".join(f"{key}: {value}" for key, value in headers.items())
     request_text = f"{request_line}\r\n{header_text}\r\n\r\n"
-    LOGGER.debug("RTSP send: %s", request_text)
+    LOGGER.debug("RTSP send: %s %s", request_line, headers)
+    WIRE_LOGGER.debug("RTSP send: %s", request_text)
     writer.write(request_text.encode())
     await writer.drain()
 
@@ -115,8 +114,9 @@ async def _simple_request(
         if len(buf) < total_len:
             continue
         body = bytes(buf[header_end + 4 : total_len]).decode(errors="replace")
-        LOGGER.debug("RTSP recv: %s", bytes(buf[:total_len]).decode(errors="replace"))
         response = _Response.parse(header_text_in, body)
+        LOGGER.debug("RTSP recv: %s %s", response.status_line, response.headers)
+        WIRE_LOGGER.debug("RTSP recv: %s", bytes(buf[:total_len]).decode(errors="replace"))
         if not response.ok:
             msg = f"{method} failed: {response.status_line}"
             raise RTSPError(msg)
@@ -124,21 +124,7 @@ async def _simple_request(
 
 
 class RTSPSession:
-    """
-    One long-lived upstream RTSP/TCP connection to the camera's /onvif1 endpoint.
-
-    Kept open for the lifetime of the config entry (continuous streaming, per user's own
-    choice, needed for assist_satellite wake-word support later). The camera is only powered
-    on when protecting the house, so this connection is expected to be down most of the
-    time -- `start()` launches a supervising reconnect loop rather than connecting once, and
-    online/offline transitions are logged only on the edge (matching rtsp-fixer's own
-    `updateConnErr`) so a powered-off camera doesn't spam the log every retry.
-
-    Consumers subscribe for interleaved frames on a channel set (video: 0-1, audio: 2-3); PTZ
-    commands are multiplexed onto this same connection -- confirmed live that the camera
-    tolerates SET_PARAMETER while PLAY is active. Push-to-talk deliberately does NOT share
-    this connection; see TalkSession.
-    """
+    """One long-lived, auto-reconnecting RTSP connection; PTZ shares it, push-to-talk uses a separate TalkSession."""
 
     def __init__(self, host: str) -> None:
         """Initialize with the camera's LAN host/IP. Call start() before use."""
@@ -176,9 +162,7 @@ class RTSPSession:
     async def stop(self) -> None:
         """Stop reconnecting and tear down the upstream connection."""
         if self._supervisor_task is not None:
-            self._supervisor_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._supervisor_task
+            await cancel_and_wait(self._supervisor_task)
             self._supervisor_task = None
         await self.__disconnect()
 
@@ -192,10 +176,13 @@ class RTSPSession:
                 continue
             self.__mark_online()
             assert self._reader_task is not None  # noqa: S101
-            with contextlib.suppress(asyncio.CancelledError):
+            try:
                 await self._reader_task
+            except OSError as exception:
+                self.__mark_offline(exception)
+            else:
+                self.__mark_offline(RTSPError("connection dropped"))
             await self.__disconnect()
-            self.__mark_offline(RTSPError("connection dropped"))
             await asyncio.sleep(_RECONNECT_INTERVAL_S)
 
     def __mark_online(self) -> None:
@@ -206,6 +193,7 @@ class RTSPSession:
             LOGGER.info("RTSP connection to %s is back online", self._host)
 
     def __mark_offline(self, exception: Exception) -> None:
+        # Warning only on the online->offline edge; the camera is usually off, so every retry would spam the log.
         was_online = self._online
         self._online = False
         self._last_error = exception
@@ -233,14 +221,12 @@ class RTSPSession:
 
     async def __disconnect(self) -> None:
         if self._reader_task is not None:
-            self._reader_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._reader_task
+            await cancel_and_wait(self._reader_task)
             self._reader_task = None
         if self._writer is not None:
             self._writer.close()
-            with contextlib.suppress(OSError):
-                await self._writer.wait_closed()
+            with contextlib.suppress(OSError, TimeoutError):
+                await asyncio.wait_for(self._writer.wait_closed(), timeout=_CANCEL_TIMEOUT_S)
         self._reader = None
         self._writer = None
         self._sdp = None
@@ -267,13 +253,7 @@ class RTSPSession:
                 self._subscribers.get(channel, []).remove(queue)
 
     async def ptz(self, direction: str, *, steps: int = 1, step_delay_ms: int = 200) -> None:
-        """
-        Send `steps` discrete ptzCmd nudges; each RTSP command moves a fixed motor increment.
-
-        The wire protocol has no distance/speed/stop concept at all -- confirmed live that
-        distance is purely `command_count x fixed_step`, so "move further" just means
-        sending the command again.
-        """
+        """Send `steps` ptzCmd nudges; the wire protocol has no distance/speed concept, only a fixed step."""
         url = f"rtsp://{self._host}{RTSP_PATH}"
         for i in range(steps):
             await self.__request(
@@ -304,7 +284,8 @@ class RTSPSession:
         future: asyncio.Future[_Response] = asyncio.get_running_loop().create_future()
         self._pending[cseq] = future
         request_text = f"{request_line}\r\n{header_text}\r\n\r\n"
-        LOGGER.debug("RTSP send: %s", request_text)
+        LOGGER.debug("RTSP send: %s %s", request_line, headers)
+        WIRE_LOGGER.debug("RTSP send: %s", request_text)
         self._writer.write(request_text.encode())
         await self._writer.drain()
         try:
@@ -343,8 +324,7 @@ class RTSPSession:
                 frame = bytes(buf[_INTERLEAVE_HEADER_BYTES : total_len])
                 del buf[:total_len]
                 for queue in self._subscribers.get(channel, ()):
-                    with contextlib.suppress(asyncio.QueueFull):
-                        queue.put_nowait((channel, frame))
+                    self.__enqueue_dropping_oldest(queue, channel, frame)
             elif buf[:4] == b"RTSP":
                 header_end = bytes(buf).find(b"\r\n\r\n")
                 if header_end == -1:
@@ -355,25 +335,28 @@ class RTSPSession:
                 if len(buf) < total_len:
                     return
                 body = bytes(buf[header_end + 4 : total_len]).decode(errors="replace")
-                LOGGER.debug("RTSP recv: %s", bytes(buf[:total_len]).decode(errors="replace"))
                 del buf[:total_len]
                 response = _Response.parse(header_text, body)
+                LOGGER.debug("RTSP recv: %s %s", response.status_line, response.headers)
+                WIRE_LOGGER.debug("RTSP recv: %s %s", response.status_line, header_text)
                 future = self._pending.pop(response.cseq, None)
                 if future is not None and not future.done():
                     future.set_result(response)
             else:
                 del buf[:1]
 
+    @staticmethod
+    def __enqueue_dropping_oldest(queue: asyncio.Queue[tuple[int, bytes]], channel: int, frame: bytes) -> None:
+        # Drop the oldest frame first so a slow consumer catches back up to live instead of growing a stale backlog.
+        if queue.full():
+            with contextlib.suppress(asyncio.QueueEmpty):
+                queue.get_nowait()
+        with contextlib.suppress(asyncio.QueueFull):
+            queue.put_nowait((channel, frame))
+
 
 class TalkSession:
-    """
-    Short-lived push-to-talk connection, deliberately independent from RTSPSession.
-
-    Never tested combining USER_CMD_SET/AudioCtlCmd push with an active PLAY session on one
-    socket (only PTZ was confirmed safe there) -- the push channel byte (0x02) could plausibly
-    collide with track2's live-audio RTP channel. Keeping this on its own connection, opened
-    fresh per announcement/conversation turn, avoids that untested risk entirely.
-    """
+    """Short-lived push-to-talk connection, kept separate since its channel (0x02) could collide with track2's audio."""
 
     def __init__(self, host: str) -> None:
         """Initialize with the camera's LAN host/IP."""
@@ -402,22 +385,13 @@ class TalkSession:
             )
         if self._writer is not None:
             self._writer.close()
-            with contextlib.suppress(OSError):
-                await self._writer.wait_closed()
+            with contextlib.suppress(OSError, TimeoutError):
+                await asyncio.wait_for(self._writer.wait_closed(), timeout=_CANCEL_TIMEOUT_S)
 
     async def send_pcm16(self, pcm16_8khz_mono: bytes) -> None:
-        """
-        Push raw 8kHz mono PCM16 audio, paced to real time in the confirmed-good framing.
-
-        Frame = `$` + channel 0x02 + little-endian u16 length + 12 zero-byte gap + payload,
-        chunked to 320 bytes (160 samples == 20ms) per frame. See docs/PROTOCOL.md.
-        """
+        """Push PCM16 audio paced to real time; each frame is `$`+channel+u16 length+12-byte gap+320-byte payload."""
         assert self._writer is not None  # noqa: S101
-        LOGGER.debug(
-            "RTSP talk: sending %d bytes of PCM16 audio to %s (not logged per-chunk, too high-volume)",
-            len(pcm16_8khz_mono),
-            self._host,
-        )
+        LOGGER.debug("RTSP talk: sending %d bytes of PCM16 audio to %s", len(pcm16_8khz_mono), self._host)
         header_prefix = bytes([_INTERLEAVE_MARKER, _TALK_CHANNEL])
         length_field = (_TALK_GAP_BYTES + _TALK_CHUNK_BYTES).to_bytes(2, "little")
         gap = bytes(_TALK_GAP_BYTES)

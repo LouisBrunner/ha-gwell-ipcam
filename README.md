@@ -16,7 +16,6 @@ See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the reverse-engineered wire proto
 
 ## Known limitations
 
-- TODO: `record_plan_time` (settingType 5, the schedule behind "Record mode: Timing") is not decoded or exposed. It's a raw bitmask on the wire that was never reverse-engineered.
 - TODO: recording playbacks
 
 ## Development
@@ -56,3 +55,9 @@ Run the test suite using:
 ```bash
 make test
 ```
+
+## Disclaimers
+
+This integration is not affiliated with Gwell in any way. It was reverse-engineered from the official Android app and is provided as-is. Use at your own risk.
+
+This integration was mostly reverse-engineered and fully developed by Claude, caveat emptor.

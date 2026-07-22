@@ -19,9 +19,37 @@ from .const import DOMAIN
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
+    from .api import Recording
     from .data import GwellIPCamConfigEntry
 
 STREAM_URL_FORMAT = f"/api/{DOMAIN}/stream/{{entry_id}}/{{recording_id}}"
+
+
+def _directory_node(
+    identifier: str | None, title: str, children: list[BrowseMediaSource] | None = None
+) -> BrowseMediaSource:
+    return BrowseMediaSource(
+        domain=DOMAIN,
+        identifier=identifier,
+        media_class=MediaClass.DIRECTORY,
+        media_content_type=MediaType.VIDEO,
+        title=title,
+        can_play=False,
+        can_expand=True,
+        children=children,
+    )
+
+
+def _recording_node(entry_id: str, recording: Recording) -> BrowseMediaSource:
+    return BrowseMediaSource(
+        domain=DOMAIN,
+        identifier=f"{entry_id}/{recording.recording_id}",
+        media_class=MediaClass.VIDEO,
+        media_content_type=MediaType.VIDEO,
+        title=recording.started_at.isoformat(),
+        can_play=True,
+        can_expand=False,
+    )
 
 
 def media_source_identifier(entry: GwellIPCamConfigEntry, recording_id: str) -> str:
@@ -56,52 +84,16 @@ class GwellIPCamMediaSource(MediaSource):
     async def async_browse_media(self, item: MediaSourceItem) -> BrowseMediaSource:
         """Browse cameras, then their recordings."""
         if not item.identifier:
-            return BrowseMediaSource(
-                domain=DOMAIN,
-                identifier=None,
-                media_class=MediaClass.DIRECTORY,
-                media_content_type=MediaType.VIDEO,
-                title="Gwell IP Cameras",
-                can_play=False,
-                can_expand=True,
-                children=[self._async_browse_camera(entry) for entry in self._config_entries()],
-            )
+            cameras = [
+                _directory_node(entry.entry_id, entry.runtime_data.identity.name) for entry in self._config_entries()
+            ]
+            return _directory_node(None, "Gwell IP Cameras", cameras)
 
         entry_id = item.identifier.split("/", 1)[0]
         entry = self._config_entry(entry_id)
         recordings = entry.runtime_data.recordings_coordinator.data or []
-        return BrowseMediaSource(
-            domain=DOMAIN,
-            identifier=entry_id,
-            media_class=MediaClass.DIRECTORY,
-            media_content_type=MediaType.VIDEO,
-            title=entry.runtime_data.identity.name,
-            can_play=False,
-            can_expand=True,
-            children=[
-                BrowseMediaSource(
-                    domain=DOMAIN,
-                    identifier=f"{entry_id}/{recording.recording_id}",
-                    media_class=MediaClass.VIDEO,
-                    media_content_type=MediaType.VIDEO,
-                    title=recording.started_at.isoformat(),
-                    can_play=True,
-                    can_expand=False,
-                )
-                for recording in recordings
-            ],
-        )
-
-    def _async_browse_camera(self, entry: GwellIPCamConfigEntry) -> BrowseMediaSource:
-        return BrowseMediaSource(
-            domain=DOMAIN,
-            identifier=entry.entry_id,
-            media_class=MediaClass.DIRECTORY,
-            media_content_type=MediaType.VIDEO,
-            title=entry.runtime_data.identity.name,
-            can_play=False,
-            can_expand=True,
-        )
+        children = [_recording_node(entry_id, recording) for recording in recordings]
+        return _directory_node(entry_id, entry.runtime_data.identity.name, children)
 
     def _config_entries(self) -> list[GwellIPCamConfigEntry]:
         return self.hass.config_entries.async_loaded_entries(DOMAIN)  # type: ignore[return-value]

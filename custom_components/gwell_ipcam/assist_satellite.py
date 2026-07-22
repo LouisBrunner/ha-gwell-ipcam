@@ -43,14 +43,7 @@ async def async_setup_entry(
 
 
 class GwellIPCamAssistSatellite(GwellIPCamEntity[GwellIPCamCoordinator], AssistSatelliteEntity):
-    """
-    Lets a camera announce TTS and take one push-to-talk conversation turn.
-
-    Deliberately push-to-talk only (via `assist_satellite.start_conversation`), not
-    always-listening wake-word: that would need a permanently-open mic connection with
-    unverified long-term stability on this camera's RTSP server, plus adds continuous load
-    to HA's own wake-word processing for very marginal benefit on a camera.
-    """
+    """Push-to-talk only, no wake-word support (no permanently-open mic connection)."""
 
     _attr_supported_features = (
         AssistSatelliteEntityFeature.ANNOUNCE | AssistSatelliteEntityFeature.START_CONVERSATION
@@ -63,17 +56,17 @@ class GwellIPCamAssistSatellite(GwellIPCamEntity[GwellIPCamCoordinator], AssistS
 
     @callback
     def async_get_configuration(self) -> AssistSatelliteConfiguration:
-        """Report no wake-word support -- this satellite is push-to-talk only."""
+        """No wake words."""
         return AssistSatelliteConfiguration(available_wake_words=[], active_wake_words=[], max_active_wake_words=0)
 
     async def async_set_configuration(self, config: AssistSatelliteConfiguration) -> None:
-        """No configurable options -- nothing to set."""
+        """Nothing to configure."""
 
     def on_pipeline_event(self, event: PipelineEvent) -> None:
-        """No custom handling needed -- base class already drives the entity's state."""
+        """No-op: base class already drives entity state."""
 
     async def async_announce(self, announcement: AssistSatelliteAnnouncement) -> None:
-        """Push the given media to the camera's speaker."""
+        """Push the media to the camera's speaker."""
         LOGGER.debug("User announced %s on %s", announcement.media_id, self.entity_id)
         client = self.coordinator.config_entry.runtime_data.client
         pcm = await async_media_id_to_pcm16_8k(self.hass, announcement.media_id)

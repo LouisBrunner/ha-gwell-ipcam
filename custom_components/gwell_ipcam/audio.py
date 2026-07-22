@@ -1,9 +1,4 @@
-"""
-Audio conversion helpers shared by the media_player and assist_satellite platforms.
-
-Uses PyAV (already a Home Assistant core dependency via the `stream` component) for all
-decoding/resampling -- no new dependency beyond what HA core already ships.
-"""
+"""Audio conversion helpers shared by media_player and assist_satellite (uses PyAV, an existing HA dependency)."""
 
 from __future__ import annotations
 
@@ -34,13 +29,13 @@ async def async_media_id_to_pcm16_8k(hass: HomeAssistant, media_id: str) -> byte
         url = resolved.url
     if url.startswith("/"):
         url = f"{get_url(hass)}{url}"
-    return await hass.async_add_executor_job(_decode_to_pcm16, url, TALK_SAMPLE_RATE_HZ)
+    return await hass.async_add_executor_job(lambda: _decode_to_pcm16(url, TALK_SAMPLE_RATE_HZ))
 
 
 def _decode_to_pcm16(url: str, rate_hz: int) -> bytes:
     resampler = av.AudioResampler(format="s16", layout="mono", rate=rate_hz)
     out = bytearray()
-    with av.open(url) as container:
+    with av.open(url, timeout=(10.0, 10.0)) as container:
         stream = container.streams.audio[0]
         for packet in container.demux(stream):
             for frame in packet.decode():
@@ -50,11 +45,7 @@ def _decode_to_pcm16(url: str, rate_hz: int) -> bytes:
 
 
 async def async_listen_stream_16k(session: RTSPSession) -> AsyncIterator[bytes]:
-    """
-    Yield 16kHz mono PCM16 chunks decoded from the camera's live listen-audio (PCMA) track.
-
-    For the assist_satellite mic input -- Assist pipelines expect 16kHz mono PCM16.
-    """
+    """Yield 16kHz mono PCM16 chunks from the camera's listen-audio track, as Assist pipelines expect."""
     codec_context = av.CodecContext.create("pcm_alaw", "r")
     codec_context.sample_rate = TALK_SAMPLE_RATE_HZ
     codec_context.layout = "mono"
