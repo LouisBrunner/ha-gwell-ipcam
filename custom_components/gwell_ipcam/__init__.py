@@ -10,6 +10,7 @@ from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError, ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.util import dt as dt_util
 
 from .api import APIAuthError, APIConnectionError, APIError, GwellIPCamClient
 from .const import CONF_PASSWORD_HASH, DISCOVERY_INTERVAL_S, DOMAIN
@@ -97,7 +98,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -
     await recordings_coordinator.async_config_entry_first_refresh()
 
     # Seed the baseline before listening, or every recording already on the SD card looks "new" on this boot.
-    entry.runtime_data.known_recording_ids = {r.recording_id for r in recordings_coordinator.data or []}
+    boot_recordings = recordings_coordinator.data or []
+    entry.runtime_data.known_recording_ids = {r.recording_id for r in boot_recordings}
+    entry.runtime_data.recordings_since = max((r.started_at for r in boot_recordings), default=dt_util.utcnow())
     entry.async_on_unload(
         recordings_coordinator.async_add_listener(lambda: async_handle_recordings_update(hass, entry))
     )

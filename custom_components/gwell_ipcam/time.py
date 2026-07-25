@@ -78,7 +78,7 @@ class GwellIPCamTime(GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPCam
         start, end = decode_record_plan_time(current) or (dtime(0, 0), dtime(0, 0))
         client = self.coordinator.config_entry.runtime_data.client
         if self.entity_description.endpoint == "start":
-            await client.async_set_record_plan(value, end, uid=uid)
+            fresh = await client.async_set_record_plan(value, end, uid=uid)
         else:
-            await client.async_set_record_plan(start, value, uid=uid)
-        await self.coordinator.async_request_refresh()
+            fresh = await client.async_set_record_plan(start, value, uid=uid)
+        self.coordinator.apply_fresh_settings(fresh)

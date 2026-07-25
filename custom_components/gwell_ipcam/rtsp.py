@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -19,6 +20,7 @@ _INTERLEAVE_MARKER = 0x24
 _INTERLEAVE_HEADER_BYTES = 4
 _REQUEST_TIMEOUT_S = 8.0
 _RECONNECT_INTERVAL_S = 15.0
+_INITIAL_RECONNECT_INTERVAL_S = 2.0
 _CANCEL_TIMEOUT_S = 5.0
 
 
@@ -73,11 +75,21 @@ class _Response:
 
 
 def _parse_content_length(header_text: str) -> int:
+    """
+    Return the body length, or 0 if there's no such header.
+
+    A header present but unparseable is not the same as absent: silently treating it as 0 would
+    misplace every subsequent message boundary, so that raises instead of returning a value
+    indistinguishable from "no body".
+    """
     for line in header_text.split("\r\n")[1:]:
         key, sep, value = line.partition(":")
         if sep and key.strip().lower() == "content-length":
-            with contextlib.suppress(ValueError):
+            try:
                 return int(value.strip())
+            except ValueError as exception:
+                msg = f"unparseable Content-Length: {value!r}"
+                raise RTSPError(msg) from exception
     return 0
 
 
@@ -156,25 +168,50 @@ class RTSPSession:
         return self._last_error
 
     async def start(self) -> None:
-        """Start the supervising connect/reconnect loop. Does not block for the first connect."""
+        """
+        Connect once before returning, then hand off to the supervising reconnect loop.
+
+        Without this, the camera entity/proxy went live before the upstream was actually connected --
+        HA's stream would immediately DESCRIBE the local proxy, get a 454 (no SDP yet), and fall into
+        its own escalating restart backoff (10s, 20s, 30s, 60s...) for a connection that was about to
+        succeed a moment later anyway.
+        """
+        await self.__try_connect_once()
         self._supervisor_task = asyncio.get_running_loop().create_task(self.__supervise())
+
+    async def __try_connect_once(self) -> None:
+        """Attempt one connection, updating online/offline state; never raises."""
+        try:
+            await self.__connect_once()
+        except (OSError, RTSPError, TimeoutError) as exception:
+            self.__mark_offline(exception)
+        else:
+            self.__mark_online()
 
     async def stop(self) -> None:
         """Stop reconnecting and tear down the upstream connection."""
+        started = time.monotonic()
         if self._supervisor_task is not None:
+            LOGGER.debug("Cancelling RTSP supervisor task for %s", self._host)
             await cancel_and_wait(self._supervisor_task)
             self._supervisor_task = None
+            LOGGER.debug("Cancelled RTSP supervisor task for %s in %.3fs", self._host, time.monotonic() - started)
         await self.__disconnect()
+        LOGGER.debug("RTSPSession.stop() for %s finished in %.3fs total", self._host, time.monotonic() - started)
 
     async def __supervise(self) -> None:
+        has_ever_been_online = self._online
         while True:
-            try:
-                await self.__connect_once()
-            except (OSError, RTSPError, TimeoutError) as exception:
-                self.__mark_offline(exception)
-                await asyncio.sleep(_RECONNECT_INTERVAL_S)
-                continue
-            self.__mark_online()
+            if not self._online:
+                await self.__try_connect_once()
+                if not self._online:
+                    # Before the first successful connect, retry quickly instead of the steady-state
+                    # backoff, so a camera that's merely slow to boot doesn't cost the live stream a
+                    # full minute to start.
+                    interval = _RECONNECT_INTERVAL_S if has_ever_been_online else _INITIAL_RECONNECT_INTERVAL_S
+                    await asyncio.sleep(interval)
+                    continue
+                has_ever_been_online = True
             assert self._reader_task is not None  # noqa: S101
             try:
                 await self._reader_task
@@ -203,7 +240,11 @@ class RTSPSession:
             LOGGER.debug("RTSP connection to %s still offline: %s", self._host, exception)
 
     async def __connect_once(self) -> None:
-        self._reader, self._writer = await asyncio.open_connection(self._host, RTSP_PORT)
+        # Unbounded otherwise: a dead/unreachable host can leave the OS's own TCP connect timeout
+        # (which can run to a minute or more) gating `start()`, and in turn `async_setup_entry`.
+        self._reader, self._writer = await asyncio.wait_for(
+            asyncio.open_connection(self._host, RTSP_PORT), timeout=_REQUEST_TIMEOUT_S
+        )
         url = f"rtsp://{self._host}{RTSP_PATH}"
         await self.__simple(f"OPTIONS {url} RTSP/1.0")
         desc = await self.__simple(f"DESCRIBE {url} RTSP/1.0", {"Accept": "application/sdp"})
@@ -220,13 +261,16 @@ class RTSPSession:
         self._reader_task = asyncio.get_running_loop().create_task(self.__read_loop())
 
     async def __disconnect(self) -> None:
+        started = time.monotonic()
         if self._reader_task is not None:
             await cancel_and_wait(self._reader_task)
             self._reader_task = None
+            LOGGER.debug("Cancelled RTSP reader task for %s in %.3fs", self._host, time.monotonic() - started)
         if self._writer is not None:
             self._writer.close()
             with contextlib.suppress(OSError, TimeoutError):
                 await asyncio.wait_for(self._writer.wait_closed(), timeout=_CANCEL_TIMEOUT_S)
+            LOGGER.debug("Closed RTSP writer for %s in %.3fs total", self._host, time.monotonic() - started)
         self._reader = None
         self._writer = None
         self._sdp = None

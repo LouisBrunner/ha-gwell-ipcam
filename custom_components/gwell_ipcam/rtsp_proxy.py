@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -11,6 +12,7 @@ from .const import LOGGER, WIRE_LOGGER
 from .rtsp import AUDIO_CHANNELS, VIDEO_CHANNELS, cancel_and_wait
 
 _CANCEL_TIMEOUT_S = 5.0
+_REQUEST_READ_TIMEOUT_S = 8.0
 
 if TYPE_CHECKING:
     from .rtsp import RTSPSession
@@ -29,12 +31,18 @@ class _Request:
     headers: dict[str, str]
 
 
-async def _read_request(reader: asyncio.StreamReader, buf: bytearray) -> _Request | None:
-    """Parse one request out of `buf` (refilled from `reader` as needed); leftover bytes stay in `buf`."""
+async def _read_request(reader: asyncio.StreamReader, buf: bytearray, timeout_s: float | None) -> _Request | None:
+    """
+    Parse one request out of `buf` (refilled from `reader` as needed); leftover bytes stay in `buf`.
+
+    `timeout_s` only guards against a client that never finishes the initial handshake -- once PLAY has
+    started, a client legitimately sends nothing further until it tears down, so the caller passes `None`
+    (real EOF from `reader.read()` on disconnect is what ends the loop then, not an idle timeout).
+    """
     while True:
         idx = bytes(buf).find(b"\r\n\r\n")
         if idx == -1:
-            chunk = await reader.read(4096)
+            chunk = await asyncio.wait_for(reader.read(4096), timeout=timeout_s)
             if not chunk:
                 return None
             buf.extend(chunk)
@@ -52,7 +60,7 @@ async def _read_request(reader: asyncio.StreamReader, buf: bytearray) -> _Reques
         WIRE_LOGGER.debug("local RTSP proxy recv: %s", text)
         content_length = int(headers.get("content-length", "0"))
         while len(buf) < header_end + content_length:
-            chunk = await reader.read(4096)
+            chunk = await asyncio.wait_for(reader.read(4096), timeout=timeout_s)
             if not chunk:
                 return None
             buf.extend(chunk)
@@ -109,17 +117,21 @@ class RTSPProxyServer:
     async def stop(self) -> None:
         """Stop listening and drop any in-flight downstream clients."""
         if self._server is not None:
+            started = time.monotonic()
             self._server.close()
             # close()/wait_closed() alone never touch already-accepted connections, only new ones.
-            await self._server.abort_clients()
+            # abort_clients() is synchronous (added in Python 3.13) -- it is not itself awaitable.
+            self._server.abort_clients()
+            LOGGER.debug("Aborted local RTSP proxy clients in %.3fs", time.monotonic() - started)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._server.wait_closed(), timeout=_CANCEL_TIMEOUT_S)
+            LOGGER.debug("Local RTSP proxy server closed in %.3fs total", time.monotonic() - started)
             self._server = None
 
     async def __handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             await self.__serve(reader, writer)
-        except (OSError, asyncio.IncompleteReadError, ValueError):
+        except (OSError, asyncio.IncompleteReadError, ValueError, TimeoutError):
             LOGGER.debug("local RTSP proxy client disconnected", exc_info=True)
         finally:
             writer.close()
@@ -131,7 +143,8 @@ class RTSPProxyServer:
         buf = bytearray()
         try:
             while True:
-                request = await _read_request(reader, buf)
+                timeout_s = None if state.forward_task is not None else _REQUEST_READ_TIMEOUT_S
+                request = await _read_request(reader, buf, timeout_s)
                 if request is None:
                     return
                 if not await self.__handle_request(request, writer, state):
@@ -188,8 +201,18 @@ class RTSPProxyServer:
         return None
 
     async def __forward(self, writer: asyncio.StreamWriter, channels: tuple[int, ...]) -> None:
-        async with self._session.subscribe(channels) as frames:
-            async for channel, payload in frames:
-                header = bytes([0x24, channel]) + len(payload).to_bytes(2, "big")
-                writer.write(header + payload)
-                await writer.drain()
+        LOGGER.debug("local RTSP proxy: forward task started for channels=%s", channels)
+        count = 0
+        try:
+            async with self._session.subscribe(channels) as frames:
+                async for channel, payload in frames:
+                    count += 1
+                    if count <= 3 or count % 50 == 0:  # noqa: PLR2004
+                        LOGGER.debug(
+                            "local RTSP proxy: forwarded frame #%d channel=%d len=%d", count, channel, len(payload)
+                        )
+                    header = bytes([0x24, channel]) + len(payload).to_bytes(2, "big")
+                    writer.write(header + payload)
+                    await writer.drain()
+        finally:
+            LOGGER.debug("local RTSP proxy: forward task ended after %d frames", count)

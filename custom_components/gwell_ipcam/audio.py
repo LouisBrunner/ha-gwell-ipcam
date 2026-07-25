@@ -8,7 +8,7 @@ import av
 from homeassistant.components import media_source
 from homeassistant.helpers.network import get_url
 
-from .const import SATELLITE_SAMPLE_RATE_HZ, TALK_SAMPLE_RATE_HZ
+from .const import LOGGER, SATELLITE_SAMPLE_RATE_HZ, TALK_SAMPLE_RATE_HZ
 from .rtsp import AUDIO_CHANNELS
 
 if TYPE_CHECKING:
@@ -50,11 +50,20 @@ async def async_listen_stream_16k(session: RTSPSession) -> AsyncIterator[bytes]:
     codec_context.sample_rate = TALK_SAMPLE_RATE_HZ
     codec_context.layout = "mono"
     resampler = av.AudioResampler(format="s16", layout="mono", rate=SATELLITE_SAMPLE_RATE_HZ)
-    async with session.subscribe(AUDIO_CHANNELS) as frames:
-        async for channel, payload in frames:
-            if channel != AUDIO_CHANNELS[0] or len(payload) <= _RTP_HEADER_BYTES:
-                continue
-            packet = av.Packet(payload[_RTP_HEADER_BYTES:])
-            for frame in codec_context.decode(packet):
-                for resampled in resampler.resample(frame):
-                    yield resampled.to_ndarray().tobytes()
+    rtp_packets = 0
+    pcm_bytes = 0
+    LOGGER.debug("Listening for camera mic audio")
+    try:
+        async with session.subscribe(AUDIO_CHANNELS) as frames:
+            async for channel, payload in frames:
+                if channel != AUDIO_CHANNELS[0] or len(payload) <= _RTP_HEADER_BYTES:
+                    continue
+                rtp_packets += 1
+                packet = av.Packet(payload[_RTP_HEADER_BYTES:])
+                for frame in codec_context.decode(packet):
+                    for resampled in resampler.resample(frame):
+                        chunk = resampled.to_ndarray().tobytes()
+                        pcm_bytes += len(chunk)
+                        yield chunk
+    finally:
+        LOGGER.debug("Stopped listening for camera mic audio (%d RTP packets, %d PCM bytes)", rtp_packets, pcm_bytes)

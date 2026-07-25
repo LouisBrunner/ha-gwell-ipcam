@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.entity_platform import async_get_platforms
 
 from .api import map_ptz_direction
 from .const import DOMAIN, LOGGER
@@ -87,6 +88,17 @@ class GwellIPCamButton(
         client = self.coordinator.config_entry.runtime_data.client
         return {"active": client.quick_record_active}
 
+    def _tag_quick_record_side_effects(self) -> None:
+        """Attribute switch.record/select.record_mode's next state write to this button press in the logbook."""
+        record_unique_id = f"{self.coordinator.config_entry.unique_id}_record"
+        record_type_unique_id = f"{self.coordinator.config_entry.unique_id}_record_type"
+        for platform in async_get_platforms(self.hass, DOMAIN):
+            if platform.domain not in ("switch", "select"):
+                continue
+            for entity in platform.entities.values():
+                if entity.unique_id in (record_unique_id, record_type_unique_id):
+                    entity.async_set_context(self._context)
+
     async def async_press(self) -> None:
         """Handle the button press."""
         client = self.coordinator.config_entry.runtime_data.client
@@ -117,9 +129,17 @@ class GwellIPCamButton(
             case "format_sd_card":
                 await client.async_format_sd_card(uid=uid)
             case "quick_record":
-                await client.async_toggle_quick_record(uid=uid)
+                _active, fresh = await client.async_toggle_quick_record(
+                    current_settings=self.coordinator.data.settings, uid=uid
+                )
+                self._tag_quick_record_side_effects()
+                self.coordinator.apply_fresh_settings(fresh)
+                self.async_write_ha_state()
+                return
             case "sync_time":
-                await client.async_sync_time(uid=uid)
+                camera_time = await client.async_sync_time(uid=uid)
+                self.coordinator.apply_fresh_camera_time(camera_time)
+                return
             case _:
                 raise NotImplementedError(key)
         await self.coordinator.async_request_refresh()

@@ -57,7 +57,7 @@ NUMBER_DESCRIPTIONS: tuple[GwellIPCamNumberDescription, ...] = (
         translation_key="motion_sensitivity",
         setting_type=SETTING_MOTION_SENSITIVITY,
         native_min_value=0,
-        native_max_value=10,  # exact upper bound unconfirmed; lower = more sensitive
+        native_max_value=6,  # confirmed from the official app's AlarmSetActivity wheel bounds; lower = more sensitive
         native_step=1,
         mode=NumberMode.SLIDER,
         icon="mdi:tune",
@@ -106,7 +106,8 @@ class GwellIPCamNumber(
         LOGGER.debug("[%s] User set %s to %s", uid, self.entity_id, value)
         client = self.coordinator.config_entry.runtime_data.client
         if self.entity_description.setting_type is None:
-            await client.async_set_record_quality(int(value), uid=uid)
+            fresh = await client.async_set_record_quality(int(value), uid=uid)
+            self.coordinator.apply_fresh_record_quality(fresh)
         else:
-            await client.async_set_setting(self.entity_description.setting_type, int(value), uid=uid)
-        await self.coordinator.async_request_refresh()
+            fresh = await client.async_set_setting(self.entity_description.setting_type, int(value), uid=uid)
+            self.coordinator.apply_fresh_settings(fresh)

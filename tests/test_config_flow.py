@@ -35,7 +35,7 @@ async def test_manual_flow_creates_entry(hass: HomeAssistant) -> None:
     assert result["step_id"] == "manual"
 
     identity = CameraIdentity(
-        contact_id="1283250", name="IPCam-1283250", model="Sricam/ieGeek IP Camera", firmware_version="21.0.0.30"
+        contact_id="9999999", name="IPCam-9999999", model="Sricam/ieGeek IP Camera", firmware_version="21.0.0.30"
     )
     with patch(
         "custom_components.gwell_ipcam.api.GwellIPCamClient.async_check_connection",
@@ -43,18 +43,18 @@ async def test_manual_flow_creates_entry(hass: HomeAssistant) -> None:
     ):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
-            {CONF_HOST: "192.168.0.66", CONF_PORT: 51880, CONF_PASSWORD: "camtest12"},
+            {CONF_HOST: "192.0.2.10", CONF_PORT: 51880, CONF_PASSWORD: "camtest12"},
         )
         result = await _resolve_progress(hass, result)
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["title"] == "IPCam-1283250"
+    assert result["title"] == "IPCam-9999999"
     assert result["data"] == {
-        CONF_HOST: "192.168.0.66",
+        CONF_HOST: "192.0.2.10",
         CONF_PORT: 51880,
         CONF_PASSWORD_HASH: "636734832",
-        CONF_CONTACT_ID: "1283250",
-        CONF_NAME: "IPCam-1283250",
+        CONF_CONTACT_ID: "9999999",
+        CONF_NAME: "IPCam-9999999",
     }
 
 
@@ -68,7 +68,7 @@ async def test_manual_flow_auth_error_keeps_form_values(hass: HomeAssistant) -> 
     ):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
-            {CONF_HOST: "192.168.0.66", CONF_PORT: 51880, CONF_PASSWORD: "wrong"},
+            {CONF_HOST: "192.0.2.10", CONF_PORT: 51880, CONF_PASSWORD: "wrong"},
         )
         result = await _resolve_progress(hass, result)
 
@@ -78,7 +78,7 @@ async def test_manual_flow_auth_error_keeps_form_values(hass: HomeAssistant) -> 
     data_schema = result["data_schema"]
     assert data_schema is not None
     defaults = {marker.schema: marker.default() for marker in data_schema.schema if marker.default is not vol.UNDEFINED}
-    assert defaults[CONF_HOST] == "192.168.0.66"
+    assert defaults[CONF_HOST] == "192.0.2.10"
     assert defaults[CONF_PORT] == 51880
     assert defaults[CONF_PASSWORD] == "wrong"
 
@@ -96,7 +96,7 @@ async def test_discover_flow_aborts_when_nothing_found(hass: HomeAssistant) -> N
 
 
 async def test_discover_flow_shows_camera_list(hass: HomeAssistant) -> None:
-    camera = DiscoveredCamera(host="192.168.0.66", port=DEFAULT_PORT, contact_id="1283250", name="IPCam-1283250")
+    camera = DiscoveredCamera(host="192.0.2.10", port=DEFAULT_PORT, contact_id="9999999", name="IPCam-9999999")
     with patch(
         "custom_components.gwell_ipcam.api.GwellIPCamClient.async_discover",
         AsyncMock(return_value=[camera]),
@@ -122,8 +122,8 @@ async def test_discover_flow_surfaces_broadcast_failure(hass: HomeAssistant) -> 
 
 
 async def test_dhcp_flow_creates_entry(hass: HomeAssistant) -> None:
-    camera = DiscoveredCamera(host="192.168.0.66", port=51880, contact_id="1283250", name="IPCam-1283250")
-    discovery_info = DhcpServiceInfo(ip="192.168.0.66", hostname="ipcam", macaddress="4cb0088a361a")
+    camera = DiscoveredCamera(host="192.0.2.10", port=51880, contact_id="9999999", name="IPCam-9999999")
+    discovery_info = DhcpServiceInfo(ip="192.0.2.10", hostname="ipcam", macaddress="4cb0088a361a")
     with patch(
         "custom_components.gwell_ipcam.api.GwellIPCamClient.async_discover_one",
         AsyncMock(return_value=camera),
@@ -135,7 +135,7 @@ async def test_dhcp_flow_creates_entry(hass: HomeAssistant) -> None:
     assert result["step_id"] == "discover_password"
 
     identity = CameraIdentity(
-        contact_id="1283250", name="IPCam-1283250", model="Sricam/ieGeek IP Camera", firmware_version="21.0.0.30"
+        contact_id="9999999", name="IPCam-9999999", model="Sricam/ieGeek IP Camera", firmware_version="21.0.0.30"
     )
     with patch(
         "custom_components.gwell_ipcam.api.GwellIPCamClient.async_check_connection",
@@ -146,16 +146,16 @@ async def test_dhcp_flow_creates_entry(hass: HomeAssistant) -> None:
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"] == {
-        CONF_HOST: "192.168.0.66",
+        CONF_HOST: "192.0.2.10",
         CONF_PORT: 51880,
         CONF_PASSWORD_HASH: "636734832",
-        CONF_CONTACT_ID: "1283250",
-        CONF_NAME: "IPCam-1283250",
+        CONF_CONTACT_ID: "9999999",
+        CONF_NAME: "IPCam-9999999",
     }
 
 
 async def test_dhcp_flow_aborts_when_camera_not_reachable(hass: HomeAssistant) -> None:
-    discovery_info = DhcpServiceInfo(ip="192.168.0.66", hostname="ipcam", macaddress="4cb0088a361a")
+    discovery_info = DhcpServiceInfo(ip="192.0.2.10", hostname="ipcam", macaddress="4cb0088a361a")
     with patch(
         "custom_components.gwell_ipcam.api.GwellIPCamClient.async_discover_one",
         AsyncMock(return_value=None),

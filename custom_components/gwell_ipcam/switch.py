@@ -102,8 +102,8 @@ class GwellIPCamSwitch(
         client = self.coordinator.config_entry.runtime_data.client
         desc = self.entity_description
         if desc.setting_type is None:
-            await client.async_set_recording_state(enabled=value, uid=uid)
+            fresh = await client.async_set_recording_state(enabled=value, uid=uid)
         else:
             raw_value = not value if desc.invert else value
-            await client.async_set_setting(desc.setting_type, int(raw_value), uid=uid)
-        await self.coordinator.async_request_refresh()
+            fresh = await client.async_set_setting(desc.setting_type, int(raw_value), uid=uid)
+        self.coordinator.apply_fresh_settings(fresh)

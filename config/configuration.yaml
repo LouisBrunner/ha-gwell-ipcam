@@ -1,6 +1,15 @@
 # yaml-language-server: $schema=https://schemas.lbrunner.net/home-assistant/configuration.schema.json
 
-default_config:
+frontend:
+config:
+history:
+logbook:
+dhcp:
+media_source:
+stream:
+
+go2rtc:
+  url: http://127.0.0.1:1984
 
 homeassistant:
   debug: true
@@ -12,4 +21,6 @@ logger:
   default: info
   logs:
     custom_components.gwell_ipcam: debug
-    custom_components.gwell_ipcam.wire: warning
+    custom_components.gwell_ipcam.wire: debug
+    homeassistant.components.stream: debug
+    homeassistant.components.camera: debug

@@ -268,7 +268,7 @@ outside `{1, 72}` as "no update" rather than assuming it's exhaustive.
 
 Followed by a 4-byte `dns` field in the same reverse-byte-order encoding.
 `mode`: `0x00`=manual (explicit IP fields), `0x01`=auto/DHCP. Each 4-byte
-IP field stores its octets in reverse order — `192.168.0.66` is sent as
+IP field stores its octets in reverse order — `192.0.2.10` is sent as
 bytes `42 00 A8 C0`.
 
 ## Admin password change

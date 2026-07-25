@@ -26,6 +26,7 @@ from .const import CLOCK_DRIFT_THRESHOLD_S, LOGGER, RECORDINGS_POLL_INTERVAL_S, 
 
 _UPDATE_RETRIES = 2
 _DISCOVERY_PROBE_TIMEOUT_S = 2.0
+_MAX_FALLBACK_STREAK = 3
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -83,22 +84,51 @@ class _Fallback[T]:
     value: T
 
 
+@dataclass
+class _FetchContext:
+    """Everything a fallback-tolerant fetch needs beyond the field-specific call and fallback value."""
+
+    probe: _Probe
+    uid: str
+    streaks: dict[str, int]
+
+
 async def _fetch_or_keep_previous[T](
-    probe: _Probe, uid: str, label: str, call: Callable[[], Awaitable[T]], fallback: _Fallback[T]
+    ctx: _FetchContext, label: str, call: Callable[[], Awaitable[T]], fallback: _Fallback[T]
 ) -> T:
     """
     Like `_call_with_retry`, but fall back to `fallback.value` instead of failing the whole coordinator update.
 
     Without this, one stuck field (e.g. record quality) would mark every entity on this coordinator
     unavailable even though the other three fields fetched fine this cycle.
+
+    Only tolerates `_MAX_FALLBACK_STREAK` consecutive failures before giving up: otherwise a field stuck
+    failing forever would serve the same stale (or empty) value forever, indistinguishable from a genuinely
+    healthy zero/empty reading, instead of the entity ever going unavailable.
     """
     try:
-        return await _call_with_retry(probe, uid, label, call)
+        result = await _call_with_retry(ctx.probe, ctx.uid, label, call)
     except UpdateFailed:
         if not fallback.has_previous:
             raise
-        LOGGER.warning("[%s] %s still failing after retries, keeping the last known value", uid, label)
+        streak = ctx.streaks.get(label, 0) + 1
+        ctx.streaks[label] = streak
+        if streak > _MAX_FALLBACK_STREAK:
+            LOGGER.warning(
+                "[%s] %s failed %d times in a row, no longer serving the stale value", ctx.uid, label, streak
+            )
+            raise
+        LOGGER.warning(
+            "[%s] %s still failing after retries (%d/%d), keeping the last known value",
+            ctx.uid,
+            label,
+            streak,
+            _MAX_FALLBACK_STREAK,
+        )
         return fallback.value
+    else:
+        ctx.streaks.pop(label, None)
+        return result
 
 
 @dataclass
@@ -130,6 +160,52 @@ class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
             name=f"{config_entry.title} state",
             update_interval=timedelta(seconds=STATE_UPDATE_INTERVAL_S),
         )
+        self._fallback_streaks: dict[str, int] = {}
+
+    def apply_fresh_settings(self, settings: dict[int, int]) -> None:
+        """
+        Push settings already confirmed correct by a write's own read-back, bypassing a fresh poll.
+
+        `async_request_refresh()` can coalesce into an already-in-flight refresh that started before the
+        write landed, or re-poll into the camera's own stale re-broadcast -- either way, entities would
+        keep showing the pre-write value for up to a full poll interval despite the write having verified.
+        """
+        if self.data is None:
+            return
+        self.async_set_updated_data(
+            GwellIPCamState(
+                camera_time=self.data.camera_time,
+                storage=self.data.storage,
+                settings=settings,
+                record_quality=self.data.record_quality,
+            )
+        )
+
+    def apply_fresh_record_quality(self, record_quality: int) -> None:
+        """Apply the same reasoning as `apply_fresh_settings`, for the one field outside the settings dump."""
+        if self.data is None:
+            return
+        self.async_set_updated_data(
+            GwellIPCamState(
+                camera_time=self.data.camera_time,
+                storage=self.data.storage,
+                settings=self.data.settings,
+                record_quality=record_quality,
+            )
+        )
+
+    def apply_fresh_camera_time(self, camera_time: datetime) -> None:
+        """Apply the same reasoning as `apply_fresh_settings`, for the camera clock."""
+        if self.data is None:
+            return
+        self.async_set_updated_data(
+            GwellIPCamState(
+                camera_time=camera_time,
+                storage=self.data.storage,
+                settings=self.data.settings,
+                record_quality=self.data.record_quality,
+            )
+        )
 
     async def _async_update_data(self) -> GwellIPCamState:
         """Fetch the camera's general state; a field still failing after retries keeps its last known value."""
@@ -137,43 +213,43 @@ class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
         probe = _Probe(self.hass, self.config_entry.data[CONF_HOST])
         previous = self.data
         uid = uuid.uuid4().hex[:8]
+        ctx = _FetchContext(probe, uid, self._fallback_streaks)
         started = time.monotonic()
         LOGGER.debug("[%s] Starting state check", uid)
         has_previous = previous is not None
         settings = await _fetch_or_keep_previous(
-            probe,
-            uid,
+            ctx,
             "get_settings",
             lambda: client.async_get_settings(uid=uid),
             _Fallback(has_previous, previous.settings if previous else {}),
         )
         camera_time = await _fetch_or_keep_previous(
-            probe,
-            uid,
+            ctx,
             "get_camera_time",
             lambda: client.async_get_camera_time(uid=uid),
             _Fallback(has_previous, previous.camera_time if previous else dt_util.utcnow()),
         )
         storage = await _fetch_or_keep_previous(
-            probe,
-            uid,
+            ctx,
             "get_storage_state",
             lambda: client.async_get_storage_state(uid=uid),
             _Fallback(has_previous, previous.storage if previous else StorageState(used_mb=0, total_mb=0)),
         )
         record_quality = await _fetch_or_keep_previous(
-            probe,
-            uid,
+            ctx,
             "get_record_quality",
             lambda: client.async_get_record_quality(uid=uid),
             _Fallback(has_previous, previous.record_quality if previous else None),
         )
         if abs((dt_util.utcnow() - camera_time).total_seconds()) > CLOCK_DRIFT_THRESHOLD_S:
             LOGGER.info("[%s] Camera clock drifted from %s, syncing", uid, camera_time)
-            await _call_with_retry(probe, uid, "sync_time", lambda: client.async_sync_time(uid=uid))
-            camera_time = await _call_with_retry(
-                probe, uid, "get_camera_time", lambda: client.async_get_camera_time(uid=uid)
-            )
+            try:
+                camera_time = await _call_with_retry(probe, uid, "sync_time", lambda: client.async_sync_time(uid=uid))
+            except UpdateFailed as exception:
+                # async_sync_time now verifies the clock actually changed, so a failure here is real,
+                # not a loose ack guess -- but it shouldn't fail settings/storage/record_quality, which
+                # already fetched fine this cycle, just because the resync itself didn't work.
+                LOGGER.warning("[%s] Camera clock sync failed, keeping the drifted value: %s", uid, exception)
         LOGGER.debug("[%s] Finished state check in %.3fs", uid, time.monotonic() - started)
         return GwellIPCamState(
             camera_time=camera_time,
@@ -197,6 +273,7 @@ class GwellIPCamRecordingsCoordinator(DataUpdateCoordinator[list[Recording]]):
             name=f"{config_entry.title} recordings",
             update_interval=timedelta(seconds=RECORDINGS_POLL_INTERVAL_S),
         )
+        self._fallback_streaks: dict[str, int] = {}
 
     async def _async_update_data(self) -> list[Recording]:
         """Fetch the current recordings list; keeps the last known list if still failing after retries."""
@@ -204,11 +281,11 @@ class GwellIPCamRecordingsCoordinator(DataUpdateCoordinator[list[Recording]]):
         probe = _Probe(self.hass, self.config_entry.data[CONF_HOST])
         previous = self.data
         uid = uuid.uuid4().hex[:8]
+        ctx = _FetchContext(probe, uid, self._fallback_streaks)
         started = time.monotonic()
         LOGGER.debug("[%s] Starting recordings check", uid)
         recordings = await _fetch_or_keep_previous(
-            probe,
-            uid,
+            ctx,
             "get_recordings",
             lambda: client.async_get_recordings(uid=uid),
             _Fallback(previous is not None, previous or []),
