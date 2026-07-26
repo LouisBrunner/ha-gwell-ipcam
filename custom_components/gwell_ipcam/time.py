@@ -58,7 +58,7 @@ async def async_setup_entry(
 
 
 class GwellIPCamTime(GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPCamTimeDescription], TimeEntity):
-    """One endpoint (start or end) of the Timing record schedule."""
+    """Time entity for one `GwellIPCamTimeDescription`."""
 
     @property
     def native_value(self) -> dtime | None:

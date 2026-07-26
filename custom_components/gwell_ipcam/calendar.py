@@ -55,7 +55,7 @@ def _to_event(entry: GwellIPCamConfigEntry, source_entity_id: str, recording: Re
 
 
 class GwellIPCamCalendar(GwellIPCamEntity[GwellIPCamRecordingsCoordinator], CalendarEntity):
-    """Calendar of recordings for a camera."""
+    """The single recordings-calendar entity for one camera device."""
 
     _attr_translation_key = "recordings_calendar"
     _attr_icon = "mdi:calendar-clock"

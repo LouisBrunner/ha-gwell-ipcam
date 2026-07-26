@@ -86,8 +86,6 @@ class _Fallback[T]:
 
 @dataclass
 class _FetchContext:
-    """Everything a fallback-tolerant fetch needs beyond the field-specific call and fallback value."""
-
     probe: _Probe
     uid: str
     streaks: dict[str, int]
@@ -96,16 +94,7 @@ class _FetchContext:
 async def _fetch_or_keep_previous[T](
     ctx: _FetchContext, label: str, call: Callable[[], Awaitable[T]], fallback: _Fallback[T]
 ) -> T:
-    """
-    Like `_call_with_retry`, but fall back to `fallback.value` instead of failing the whole coordinator update.
-
-    Without this, one stuck field (e.g. record quality) would mark every entity on this coordinator
-    unavailable even though the other three fields fetched fine this cycle.
-
-    Only tolerates `_MAX_FALLBACK_STREAK` consecutive failures before giving up: otherwise a field stuck
-    failing forever would serve the same stale (or empty) value forever, indistinguishable from a genuinely
-    healthy zero/empty reading, instead of the entity ever going unavailable.
-    """
+    """Like `_call_with_retry`, but falls back to `fallback.value` up to `_MAX_FALLBACK_STREAK` times, not failing."""
     try:
         result = await _call_with_retry(ctx.probe, ctx.uid, label, call)
     except UpdateFailed:
@@ -133,7 +122,7 @@ async def _fetch_or_keep_previous[T](
 
 @dataclass
 class GwellIPCamState:
-    """Snapshot of a camera's general state."""
+    """Snapshot of a camera's general state; individual fields may be a stale fallback if a poll failed."""
 
     camera_time: datetime
     storage: StorageState
@@ -142,7 +131,7 @@ class GwellIPCamState:
 
     @property
     def recording(self) -> bool:
-        """Whether the camera is currently recording."""
+        """Derive from `SETTING_REMOTE_RECORD` in `settings`, rather than a dedicated wire field."""
         return bool(self.settings.get(SETTING_REMOTE_RECORD, 0))
 
 
@@ -152,7 +141,7 @@ class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
     config_entry: GwellIPCamConfigEntry
 
     def __init__(self, hass: HomeAssistant, config_entry: GwellIPCamConfigEntry) -> None:
-        """Initialize the coordinator."""
+        """Initialize, polling at `STATE_UPDATE_INTERVAL_S` (the relaxed, general-state cadence)."""
         super().__init__(
             hass=hass,
             logger=LOGGER,
@@ -160,16 +149,10 @@ class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
             name=f"{config_entry.title} state",
             update_interval=timedelta(seconds=STATE_UPDATE_INTERVAL_S),
         )
-        self._fallback_streaks: dict[str, int] = {}
+        self.__fallback_streaks: dict[str, int] = {}
 
     def apply_fresh_settings(self, settings: dict[int, int]) -> None:
-        """
-        Push settings already confirmed correct by a write's own read-back, bypassing a fresh poll.
-
-        `async_request_refresh()` can coalesce into an already-in-flight refresh that started before the
-        write landed, or re-poll into the camera's own stale re-broadcast -- either way, entities would
-        keep showing the pre-write value for up to a full poll interval despite the write having verified.
-        """
+        """Push a write's already-confirmed settings, bypassing a fresh poll that could race a stale value."""
         if self.data is None:
             return
         self.async_set_updated_data(
@@ -213,7 +196,7 @@ class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
         probe = _Probe(self.hass, self.config_entry.data[CONF_HOST])
         previous = self.data
         uid = uuid.uuid4().hex[:8]
-        ctx = _FetchContext(probe, uid, self._fallback_streaks)
+        ctx = _FetchContext(probe, uid, self.__fallback_streaks)
         started = time.monotonic()
         LOGGER.debug("[%s] Starting state check", uid)
         has_previous = previous is not None
@@ -246,9 +229,6 @@ class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
             try:
                 camera_time = await _call_with_retry(probe, uid, "sync_time", lambda: client.async_sync_time(uid=uid))
             except UpdateFailed as exception:
-                # async_sync_time now verifies the clock actually changed, so a failure here is real,
-                # not a loose ack guess -- but it shouldn't fail settings/storage/record_quality, which
-                # already fetched fine this cycle, just because the resync itself didn't work.
                 LOGGER.warning("[%s] Camera clock sync failed, keeping the drifted value: %s", uid, exception)
         LOGGER.debug("[%s] Finished state check in %.3fs", uid, time.monotonic() - started)
         return GwellIPCamState(
@@ -265,7 +245,7 @@ class GwellIPCamRecordingsCoordinator(DataUpdateCoordinator[list[Recording]]):
     config_entry: GwellIPCamConfigEntry
 
     def __init__(self, hass: HomeAssistant, config_entry: GwellIPCamConfigEntry) -> None:
-        """Initialize the coordinator."""
+        """Initialize, polling at `RECORDINGS_POLL_INTERVAL_S` (tighter, since it drives motion events)."""
         super().__init__(
             hass=hass,
             logger=LOGGER,
@@ -273,7 +253,7 @@ class GwellIPCamRecordingsCoordinator(DataUpdateCoordinator[list[Recording]]):
             name=f"{config_entry.title} recordings",
             update_interval=timedelta(seconds=RECORDINGS_POLL_INTERVAL_S),
         )
-        self._fallback_streaks: dict[str, int] = {}
+        self.__fallback_streaks: dict[str, int] = {}
 
     async def _async_update_data(self) -> list[Recording]:
         """Fetch the current recordings list; keeps the last known list if still failing after retries."""
@@ -281,7 +261,7 @@ class GwellIPCamRecordingsCoordinator(DataUpdateCoordinator[list[Recording]]):
         probe = _Probe(self.hass, self.config_entry.data[CONF_HOST])
         previous = self.data
         uid = uuid.uuid4().hex[:8]
-        ctx = _FetchContext(probe, uid, self._fallback_streaks)
+        ctx = _FetchContext(probe, uid, self.__fallback_streaks)
         started = time.monotonic()
         LOGGER.debug("[%s] Starting recordings check", uid)
         recordings = await _fetch_or_keep_previous(

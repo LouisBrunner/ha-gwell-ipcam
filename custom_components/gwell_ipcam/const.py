@@ -3,8 +3,7 @@
 from logging import Logger, getLogger
 
 LOGGER: Logger = getLogger(__package__)
-# Raw UDP/RTSP frame dumps only -- set this logger to WARNING to silence the wire-level spam
-# while keeping LOGGER's higher-level one-line summaries at debug.
+# Raw UDP/RTSP frame dumps only -- set to WARNING to silence wire-level spam, keeping LOGGER's summaries at debug.
 WIRE_LOGGER: Logger = getLogger(f"{__package__}.wire")
 
 DOMAIN = "gwell_ipcam"

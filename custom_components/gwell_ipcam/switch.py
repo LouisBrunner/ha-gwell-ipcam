@@ -41,7 +41,7 @@ SWITCH_DESCRIPTIONS: tuple[GwellIPCamSwitchDescription, ...] = (
         setting_type=SETTING_MOTION_DETECT,
         icon="mdi:motion-sensor",
     ),
-    # ON means physically upside-down, which is wire value 0, hence invert=True.
+    # Wire value 0 is physically upside-down; invert=True makes the switch read "on" = upside-down.
     GwellIPCamSwitchDescription(
         key="upside_down",
         translation_key="upside_down",
@@ -74,14 +74,12 @@ async def async_setup_entry(
     )
 
 
-class GwellIPCamSwitch(
-    GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPCamSwitchDescription], SwitchEntity
-):
+class GwellIPCamSwitch(GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPCamSwitchDescription], SwitchEntity):
     """Switch toggling a boolean setting on the camera."""
 
     @property
     def is_on(self) -> bool:
-        """Return true if the setting is on."""
+        """Return the setting's value, negated if `invert`, or the recording state for the special-cased key."""
         desc = self.entity_description
         if desc.setting_type is None:
             return self.coordinator.data.recording
@@ -89,11 +87,11 @@ class GwellIPCamSwitch(
         return not raw_on if desc.invert else raw_on
 
     async def async_turn_on(self, **_: Any) -> None:
-        """Turn the setting on."""
+        """Turn on, routing the special-cased record key through `async_set_recording_state` instead."""
         await self.__set(value=True)
 
     async def async_turn_off(self, **_: Any) -> None:
-        """Turn the setting off."""
+        """Turn off, routing the special-cased record key through `async_set_recording_state` instead."""
         await self.__set(value=False)
 
     async def __set(self, *, value: bool) -> None:

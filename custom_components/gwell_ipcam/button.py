@@ -67,9 +67,7 @@ async def async_setup_entry(
     )
 
 
-class GwellIPCamButton(
-    GwellIPCamDescribedEntity[GwellIPCamCoordinator, ButtonEntityDescription], ButtonEntity
-):
+class GwellIPCamButton(GwellIPCamDescribedEntity[GwellIPCamCoordinator, ButtonEntityDescription], ButtonEntity):
     """Button triggering a one-off action on the camera."""
 
     @property
@@ -119,8 +117,7 @@ class GwellIPCamButton(
                 await self.hass.services.async_call(
                     "assist_satellite",
                     "start_conversation",
-                    # An empty start_message still goes through TTS synthesis upstream (not skipped),
-                    # which can fail on empty text -- use a real, minimal message instead.
+                    # An empty start_message still goes through TTS synthesis upstream and can fail on empty text.
                     {"entity_id": entity_id, "start_message": "Listening", "preannounce": False},
                 )
             return

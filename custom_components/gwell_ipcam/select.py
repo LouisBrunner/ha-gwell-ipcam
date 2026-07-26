@@ -69,19 +69,17 @@ async def async_setup_entry(
     )
 
 
-class GwellIPCamSelect(
-    GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPCamSelectDescription], SelectEntity
-):
+class GwellIPCamSelect(GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPCamSelectDescription], SelectEntity):
     """Select entity driven by a declarative description."""
 
     @property
     def current_option(self) -> str | None:
-        """Return the current option."""
+        """Map the raw settingType value through `value_to_option`."""
         value = self.coordinator.data.settings.get(self.entity_description.setting_type)
         return self.entity_description.value_to_option.get(value) if value is not None else None
 
     async def async_select_option(self, option: str) -> None:
-        """Write the selected option back to the camera."""
+        """Reverse-map `option` through `value_to_option` and write the raw settingType value."""
         uid = uuid.uuid4().hex[:8]
         LOGGER.debug("[%s] User set %s to %s", uid, self.entity_id, option)
         value_to_option = self.entity_description.value_to_option

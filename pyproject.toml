@@ -13,6 +13,10 @@ docker = ["aiohasupervisor==0.5.0"]
 hass = ["homeassistant==2026.4.2"]
 test = ["pytest-homeassistant-custom-component==0.13.323"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
 [tool.ruff]
 target-version = "py314"
 line-length = 120
@@ -36,27 +40,23 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "scripts/*.py" = ["T201"]
 "tests/*.py" = [
-  "S101",    # asserts are the point
+  "S101",  # asserts are the point
   "SLF001",  # private-member access to white-box-test the protocol client
-  "PLR2004", # magic values in wire-format fixtures
+  "PLR2004",  # magic values in wire-format fixtures
   "DTZ001",  # naive datetimes matching the camera's own naive clock
-  "D100",    # module docstrings
-  "D101",    # class docstrings
-  "D102",    # method docstrings
-  "D103",    # test function docstrings -- names are the description
+  "D100",  # module docstrings
+  "D101",  # class docstrings
+  "D102",  # method docstrings
+  "D103",  # test function docstrings -- names are the description
   "ANN001",  # test/fixture parameter types (mostly HA fixtures)
   "ANN201",  # test function return types (`-> None` on every test is noise)
   "ANN202",  # fixture return types
-  "D107",    # __init__ docstrings on test helper classes
-  "S106",    # hardcoded fake passwords/hashes in fixtures
-  "S107",    # same, as function defaults
-  "EM101",   # literal exception messages in test fixtures
+  "D107",  # __init__ docstrings on test helper classes
+  "S106",  # hardcoded fake passwords/hashes in fixtures
+  "S107",  # same, as function defaults
+  "EM101",  # literal exception messages in test fixtures
   "TRY003",  # long exception messages in test fixtures
 ]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-asyncio_mode = "auto"
 
 [tool.setuptools]
 packages = ["custom_components"]
@@ -66,7 +66,10 @@ package = false
 index-strategy = "unsafe-best-match"
 # docker/hass/test each pin their own homeassistant-compatible dependency
 # versions and are never installed together -- let each resolve independently.
-conflicts = [[{ group = "docker" }, { group = "test" }], [{ group = "hass" }, { group = "test" }]]
+conflicts = [
+  [{ group = "docker" }, { group = "test" }],
+  [{ group = "hass" }, { group = "test" }]
+]
 
 [[tool.uv.index]]
 name = "hass-musl"

@@ -38,7 +38,7 @@ async def async_setup_entry(
 
 
 class GwellIPCamMotionEvent(GwellIPCamEntity[GwellIPCamCoordinator], EventEntity):
-    """Fires when the camera's recordings list gains a new (motion) entry."""
+    """The single motion event entity for one camera device."""
 
     _attr_translation_key = "motion"
     _attr_icon = "mdi:motion-play"
@@ -51,7 +51,7 @@ class GwellIPCamMotionEvent(GwellIPCamEntity[GwellIPCamCoordinator], EventEntity
         self._attr_unique_id = f"{coordinator.config_entry.unique_id}_motion"
 
     async def async_added_to_hass(self) -> None:
-        """Subscribe to this camera's motion-detected bus events."""
+        """Subscribe to motion-detected bus events, filtered down to this camera's own device_id."""
         await super().async_added_to_hass()
         device_id = self.device_entry.id if self.device_entry else None
         self.async_on_remove(

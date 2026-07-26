@@ -117,19 +117,17 @@ async def async_setup_entry(
     )
 
 
-class GwellIPCamSensor(
-    GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPCamSensorDescription], SensorEntity
-):
+class GwellIPCamSensor(GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPCamSensorDescription], SensorEntity):
     """Generic sensor driven by a declarative description."""
 
     @property
     def native_value(self) -> str | int | float | datetime | None:
-        """Return the sensor's value."""
+        """Delegate to the description's `value_fn`."""
         return self.entity_description.value_fn(self.coordinator.data)
 
     @property
     def extra_state_attributes(self) -> dict[str, int] | None:
-        """Return additional attributes, if the description defines any."""
+        """Delegate to the description's `extra_attributes_fn`, if it has one."""
         if self.entity_description.extra_attributes_fn is None:
             return None
         return self.entity_description.extra_attributes_fn(self.coordinator.data)
@@ -145,7 +143,7 @@ class GwellIPCamRecordingsSensor(GwellIPCamEntity[GwellIPCamRecordingsCoordinato
     _unrecorded_attributes = frozenset({"recordings"})
 
     def __init__(self, coordinator: GwellIPCamRecordingsCoordinator, identity: CameraIdentity) -> None:
-        """Initialize the sensor."""
+        """Initialize, wiring to the recordings coordinator rather than the general state one."""
         super().__init__(coordinator, identity)
         self._attr_unique_id = f"{coordinator.config_entry.unique_id}_recordings"
 

@@ -45,9 +45,7 @@ async def async_setup_entry(
 class GwellIPCamAssistSatellite(GwellIPCamEntity[GwellIPCamCoordinator], AssistSatelliteEntity):
     """Push-to-talk only, no wake-word support (no permanently-open mic connection)."""
 
-    _attr_supported_features = (
-        AssistSatelliteEntityFeature.ANNOUNCE | AssistSatelliteEntityFeature.START_CONVERSATION
-    )
+    _attr_supported_features = AssistSatelliteEntityFeature.ANNOUNCE | AssistSatelliteEntityFeature.START_CONVERSATION
 
     def __init__(self, coordinator: GwellIPCamCoordinator, identity: CameraIdentity) -> None:
         """Initialize the satellite."""
@@ -56,7 +54,7 @@ class GwellIPCamAssistSatellite(GwellIPCamEntity[GwellIPCamCoordinator], AssistS
 
     @callback
     def async_get_configuration(self) -> AssistSatelliteConfiguration:
-        """No wake words."""
+        """Return an empty wake-word configuration (max_active_wake_words=0)."""
         return AssistSatelliteConfiguration(available_wake_words=[], active_wake_words=[], max_active_wake_words=0)
 
     async def async_set_configuration(self, config: AssistSatelliteConfiguration) -> None:
@@ -66,7 +64,7 @@ class GwellIPCamAssistSatellite(GwellIPCamEntity[GwellIPCamCoordinator], AssistS
         """No-op: base class already drives entity state."""
 
     async def async_announce(self, announcement: AssistSatelliteAnnouncement) -> None:
-        """Push the media to the camera's speaker."""
+        """Decode `announcement.media_id` to PCM16 and push it to the camera's speaker."""
         LOGGER.debug("User announced %s on %s", announcement.media_id, self.entity_id)
         client = self.coordinator.config_entry.runtime_data.client
         pcm = await async_media_id_to_pcm16_8k(self.hass, announcement.media_id)

@@ -37,7 +37,7 @@ class GwellIPCamDescribedEntity[T: DataUpdateCoordinator[Any], DescT: EntityDesc
     entity_description: DescT
 
     def __init__(self, coordinator: T, identity: CameraIdentity, entity_description: DescT) -> None:
-        """Initialize the entity from its coordinator and description."""
+        """Initialize the entity, deriving its unique ID from `entity_description.key`."""
         super().__init__(coordinator, identity)
         self.entity_description = entity_description
         self._attr_unique_id = f"{coordinator.config_entry.unique_id}_{entity_description.key}"

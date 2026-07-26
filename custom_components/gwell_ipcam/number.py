@@ -88,20 +88,18 @@ async def async_setup_entry(
     )
 
 
-class GwellIPCamNumber(
-    GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPCamNumberDescription], NumberEntity
-):
+class GwellIPCamNumber(GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPCamNumberDescription], NumberEntity):
     """Number entity driven by a declarative description."""
 
     @property
     def native_value(self) -> float | None:
-        """Return the current value."""
+        """Return record quality if `setting_type` is None, else the raw settingType value."""
         if self.entity_description.setting_type is None:
             return self.coordinator.data.record_quality
         return self.coordinator.data.settings.get(self.entity_description.setting_type)
 
     async def async_set_native_value(self, value: float) -> None:
-        """Write the value back to the camera."""
+        """Route record quality through its own wire path if `setting_type` is None, else a raw settingType write."""
         uid = uuid.uuid4().hex[:8]
         LOGGER.debug("[%s] User set %s to %s", uid, self.entity_id, value)
         client = self.coordinator.config_entry.runtime_data.client

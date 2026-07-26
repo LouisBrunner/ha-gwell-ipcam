@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, override
 
-from homeassistant.components.update import UpdateEntity, UpdateEntityFeature
+from homeassistant.components.update import UpdateEntity
 from homeassistant.helpers.event import async_track_time_interval
 
 from .const import FIRMWARE_CHECK_INTERVAL_S
@@ -37,10 +37,9 @@ async def async_setup_entry(
 
 
 class GwellIPCamFirmwareUpdate(GwellIPCamEntity[GwellIPCamCoordinator], UpdateEntity):
-    """Reports and installs camera firmware updates."""
+    """Reports available camera firmware updates; installing is not supported (no known wire command exists)."""
 
     _attr_translation_key = "firmware"
-    _attr_supported_features = UpdateEntityFeature.INSTALL
 
     def __init__(self, coordinator: GwellIPCamCoordinator, identity: CameraIdentity) -> None:
         """Initialize the update entity."""
@@ -64,7 +63,7 @@ class GwellIPCamFirmwareUpdate(GwellIPCamEntity[GwellIPCamCoordinator], UpdateEn
         self.async_write_ha_state()
 
     async def async_update(self) -> None:
-        """Check for a new firmware version."""
+        """Check for a new firmware version; called both on startup and by the periodic timer."""
         client = self.coordinator.config_entry.runtime_data.client
         info = await client.async_get_firmware_info()
         self._attr_latest_version = info.latest_version
@@ -73,7 +72,7 @@ class GwellIPCamFirmwareUpdate(GwellIPCamEntity[GwellIPCamCoordinator], UpdateEn
 
     @override
     async def async_install(self, version: str | None, backup: bool, **kwargs: Any) -> None:
-        """Install the available firmware update."""
+        """Not reachable via the UI/service (no INSTALL feature declared); always raises `APIError` if called."""
         client = self.coordinator.config_entry.runtime_data.client
         await client.async_install_firmware_update()
         await self.coordinator.async_request_refresh()

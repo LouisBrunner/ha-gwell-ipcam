@@ -30,7 +30,6 @@ if TYPE_CHECKING:
 
     from homeassistant.core import HomeAssistant
 
-# -- setting IDs (iSetNPCSettings dump, see docs/PROTOCOL.md) ---------------
 
 SETTING_REMOTE_DEFENCE = 0
 SETTING_BUZZER = 1
@@ -96,6 +95,18 @@ def _log_hex(data: bytes) -> str:
     return data.rstrip(b"\x00").hex()
 
 
+_HEADER_BYTES = 12
+_PASSWORD_BLOCK_BYTES = 8
+
+
+def _log_hex_redact_password(packet: bytes) -> str:
+    """Like `_log_hex`, but every outbound wire packet's password block (payload bytes 0-7) is never logged."""
+    split = _HEADER_BYTES + _PASSWORD_BLOCK_BYTES
+    if len(packet) < split:
+        return _log_hex(packet)
+    return f"{packet[:_HEADER_BYTES].hex()}<redacted password block>{_log_hex(packet[split:])}"
+
+
 _DES_KEY_MESG = bytes.fromhex("8c270a3eb9ec4d0e")
 _DES_KEY_PWD_CHUNK = bytes.fromhex("9cae6a5ae1fcb082")
 _ENTRY_PWD_XOR_TABLE = (
@@ -141,7 +152,7 @@ class DiscoveredCamera:
 
 @dataclass(frozen=True)
 class CameraIdentity:
-    """Identity of a camera that accepted a connection."""
+    """A camera's identity, as returned by `async_get_identity`."""
 
     contact_id: str
     name: str
@@ -169,14 +180,11 @@ class StorageState:
 
 @dataclass(frozen=True)
 class FirmwareInfo:
-    """Latest available firmware version for a camera."""
+    """Result of `async_get_firmware_info`; `release_summary`/`release_url` are always None (no such wire field)."""
 
     latest_version: str
     release_summary: str | None
     release_url: str | None
-
-
-# -- password hashing --------------------------------------------------------
 
 
 def _is_weak_password_int(n: int) -> bool:
@@ -211,9 +219,6 @@ def entry_password(password: str) -> int:
 def _rand3() -> int:
     r1, r2, r3 = random.getrandbits(31), random.getrandbits(31), random.getrandbits(31)
     return (r1 << 20 | r2 << 10 | r3) & 0xFFFFFFFF
-
-
-# -- discovery ----------------------------------------------------------------
 
 
 def _discover(
@@ -255,9 +260,6 @@ def _discover(
         return list(found.values())
     finally:
         sock.close()
-
-
-# -- low-level wire client -----------------------------------------------------
 
 
 @dataclass
@@ -365,21 +367,21 @@ class _WireSession(asyncio.DatagramProtocol):
     """Persistent UDP connection to one camera; dispatches acks by msgid and caches the latest per broadcast shape."""
 
     def __init__(self, host: str) -> None:
-        self._host = host
-        self._transport: asyncio.DatagramTransport | None = None
-        self._by_msgid: dict[int, tuple[int, asyncio.Future[bytes]]] = {}
-        self._next_msgid = random.randint(_MSGID_MIN, _MSGID_MAX)  # noqa: S311 -- not a security use
-        self._rec_files_fut: asyncio.Future[bytes] | None = None
-        self._format_fut: asyncio.Future[bytes] | None = None
-        self._rec_files_lock = asyncio.Lock()
-        self._format_lock = asyncio.Lock()
+        self.__host = host
+        self.__transport: asyncio.DatagramTransport | None = None
+        self.__by_msgid: dict[int, tuple[int, asyncio.Future[bytes]]] = {}
+        self.__next_msgid = random.randint(_MSGID_MIN, _MSGID_MAX)  # noqa: S311 -- not a security use
+        self.__rec_files_fut: asyncio.Future[bytes] | None = None
+        self.__format_fut: asyncio.Future[bytes] | None = None
+        self.__rec_files_lock = asyncio.Lock()
+        self.__format_lock = asyncio.Lock()
         self.settings: _BroadcastSlot[_SettingsDump] = _BroadcastSlot()
         self.record_quality: _BroadcastSlot[int] = _BroadcastSlot()
         self.sd_capacity: _BroadcastSlot[tuple[int, int, int]] = _BroadcastSlot()
         self.device_time: _BroadcastSlot[datetime] = _BroadcastSlot()
         self.device_info: _BroadcastSlot[dict[str, str | int]] = _BroadcastSlot()
         self.update_check: _BroadcastSlot[dict[str, str | int]] = _BroadcastSlot()
-        self._broadcast_specs: tuple[_ShapeSpec, ...] = (
+        self.__broadcast_specs: tuple[_ShapeSpec, ...] = (
             _ShapeSpec(_is_settings_dump, _decode_settings_dump, self.settings),
             _ShapeSpec(_is_record_quality_reply, _decode_record_quality, self.record_quality),
             _ShapeSpec(_is_sd_capacity_reply, _decode_sd_capacity, self.sd_capacity),
@@ -389,92 +391,95 @@ class _WireSession(asyncio.DatagramProtocol):
         )
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        self._transport = transport  # ty: ignore[invalid-assignment]
+        self.__transport = transport  # ty: ignore[invalid-assignment]
 
     def connection_lost(self, exc: Exception | None) -> None:
-        self._fail_all(exc or OSError("wire session closed"))
+        self.__fail_all(exc or OSError("wire session closed"))
 
     def error_received(self, exc: Exception) -> None:
-        self._fail_all(exc)
+        self.__fail_all(exc)
 
-    def _fail_all(self, exc: Exception) -> None:
-        for _subcmd, fut in self._by_msgid.values():
+    def __fail_all(self, exc: Exception) -> None:
+        for _subcmd, fut in self.__by_msgid.values():
             if not fut.done():
                 fut.set_exception(exc)
-        self._by_msgid.clear()
-        for one_shot in (self._rec_files_fut, self._format_fut):
+        self.__by_msgid.clear()
+        for one_shot in (self.__rec_files_fut, self.__format_fut):
             if one_shot is not None and not one_shot.done():
                 one_shot.set_exception(exc)
-        self._rec_files_fut = None
-        self._format_fut = None
-        for spec in self._broadcast_specs:
+        self.__rec_files_fut = None
+        self.__format_fut = None
+        for spec in self.__broadcast_specs:
             spec.slot.fail(exc)
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:  # noqa: ARG002
-        WIRE_LOGGER.debug("UDP recv from %s (counter=%s): %s", self._host, _header_counter(data), _log_hex(data))
+        WIRE_LOGGER.debug("UDP recv from %s (counter=%s): %s", self.__host, _header_counter(data), _log_hex(data))
         if not _packet_is_intact(data):
-            LOGGER.warning("Dropping corrupted/truncated UDP reply from %s: %s", self._host, _log_hex(data))
+            LOGGER.warning("Dropping corrupted/truncated UDP reply from %s: %s", self.__host, _log_hex(data))
             return
         msgid = _short_ack_msgid(data)
         if msgid is not None:
-            self._dispatch_msgid_ack(data, msgid)
+            self.__dispatch_msgid_ack(data, msgid)
             return  # a short-ack-shaped packet is never a broadcast or one-shot reply, whether or not we're waiting
-        if self._dispatch_one_shot(data):
+        if self.__dispatch_one_shot(data):
             return
-        self._dispatch_broadcast(data)
+        self.__dispatch_broadcast(data)
 
-    def _dispatch_msgid_ack(self, data: bytes, msgid: int) -> None:
-        entry = self._by_msgid.get(msgid)
+    def __dispatch_msgid_ack(self, data: bytes, msgid: int) -> None:
+        entry = self.__by_msgid.get(msgid)
         if entry is None:
             return
         subcmd, fut = entry
         if data[1] != subcmd:
             LOGGER.warning("Ignoring msgid=%s ack with mismatched subcmd (got %s, expected %s)", msgid, data[1], subcmd)
         elif not fut.done():
-            self._by_msgid.pop(msgid, None)
+            self.__by_msgid.pop(msgid, None)
             fut.set_result(data)
 
-    def _dispatch_one_shot(self, data: bytes) -> bool:
+    def __dispatch_one_shot(self, data: bytes) -> bool:
         if _is_complete_rec_files_reply(data):
-            if self._rec_files_fut is not None and not self._rec_files_fut.done():
-                self._rec_files_fut.set_result(data)
+            if self.__rec_files_fut is not None and not self.__rec_files_fut.done():
+                self.__rec_files_fut.set_result(data)
             return True
         if _is_format_reply(data):
-            if self._format_fut is not None and not self._format_fut.done():
-                self._format_fut.set_result(data)
+            if self.__format_fut is not None and not self.__format_fut.done():
+                self.__format_fut.set_result(data)
             return True
         return False
 
-    def _dispatch_broadcast(self, data: bytes) -> None:
-        for spec in self._broadcast_specs:
+    def __dispatch_broadcast(self, data: bytes) -> None:
+        for spec in self.__broadcast_specs:
             try:
                 if not spec.detect(data):
                     continue
                 value = spec.decode(data)
-            except (struct.error, IndexError) as err:
-                LOGGER.warning("Failed to decode a broadcast reply from %s: %s", self._host, err)
+            except (struct.error, IndexError, ValueError) as err:
+                LOGGER.warning("Failed to decode a broadcast reply from %s: %s", self.__host, err)
                 return
             spec.slot.publish(value)
             return
 
     def send(self, packet: bytes, uid: str) -> None:
-        assert self._transport is not None  # noqa: S101
+        assert self.__transport is not None  # noqa: S101
         WIRE_LOGGER.debug(
-            "[%s] UDP send to %s (msgid=%s): %s", uid, self._host, _header_counter(packet), _log_hex(packet)
+            "[%s] UDP send to %s (msgid=%s): %s",
+            uid,
+            self.__host,
+            _header_counter(packet),
+            _log_hex_redact_password(packet),
         )
-        self._transport.sendto(packet)
+        self.__transport.sendto(packet)
 
     def close(self) -> None:
-        if self._transport is not None:
-            self._transport.close()
-            self._transport = None
+        if self.__transport is not None:
+            self.__transport.close()
+            self.__transport = None
 
     def alloc_msgid(self) -> int:
-        """Allocate the next msgid from a monotonic counter, skipping any value still in use (no collisions)."""
         for _ in range(_MSGID_MAX - _MSGID_MIN + 1):
-            msgid = self._next_msgid
-            self._next_msgid = _MSGID_MIN if msgid >= _MSGID_MAX else msgid + 1
-            if msgid not in self._by_msgid:
+            msgid = self.__next_msgid
+            self.__next_msgid = _MSGID_MIN if msgid >= _MSGID_MAX else msgid + 1
+            if msgid not in self.__by_msgid:
                 return msgid
         msg = "no free msgid available"
         raise APIError(msg)
@@ -482,7 +487,7 @@ class _WireSession(asyncio.DatagramProtocol):
     def begin_msgid(self, msgid: int, subcmd: int) -> asyncio.Future[bytes]:
         """Register the wait before sending, so the reply can never race the registration."""
         fut: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
-        self._by_msgid[msgid] = (subcmd, fut)
+        self.__by_msgid[msgid] = (subcmd, fut)
         return fut
 
     async def wait_msgid(self, fut: asyncio.Future[bytes], msgid: int, timeout_s: float) -> bytes | None:
@@ -493,12 +498,12 @@ class _WireSession(asyncio.DatagramProtocol):
         except OSError as err:
             raise APIConnectionError(str(err)) from err
         finally:
-            self._by_msgid.pop(msgid, None)
+            self.__by_msgid.pop(msgid, None)
 
     async def send_and_wait_rec_files(self, send: Callable[[], None], timeout_s: float) -> bytes | None:
-        async with self._rec_files_lock:
+        async with self.__rec_files_lock:
             fut: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
-            self._rec_files_fut = fut
+            self.__rec_files_fut = fut
             try:
                 send()
                 return await asyncio.wait_for(fut, timeout_s)
@@ -507,12 +512,12 @@ class _WireSession(asyncio.DatagramProtocol):
             except OSError as err:
                 raise APIConnectionError(str(err)) from err
             finally:
-                self._rec_files_fut = None
+                self.__rec_files_fut = None
 
     async def send_and_wait_format(self, send: Callable[[], None], timeout_s: float) -> bytes | None:
-        async with self._format_lock:
+        async with self.__format_lock:
             fut: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
-            self._format_fut = fut
+            self.__format_fut = fut
             try:
                 send()
                 return await asyncio.wait_for(fut, timeout_s)
@@ -521,37 +526,37 @@ class _WireSession(asyncio.DatagramProtocol):
             except OSError as err:
                 raise APIConnectionError(str(err)) from err
             finally:
-                self._format_fut = None
+                self.__format_fut = None
 
 
 class _Wire:
     """Request builder/decoder for one camera, sitting on top of a shared `_WireSession`."""
 
     def __init__(self, session: _WireSession, dst_id: int, password_int: int) -> None:
-        self._session = session
-        self._dst_id = dst_id
-        self._password_int = password_int
+        self.__session = session
+        self.__dst_id = dst_id
+        self.__password_int = password_int
 
-    def _password_block(self) -> bytes:
+    def __password_block(self) -> bytes:
         """DES-ECB via TripleDES(key*3) -- cryptography dropped plain DES; K1=K2=K3 is equivalent."""
         decryptor = Cipher(TripleDES(_DES_KEY_MESG * 3), modes.ECB()).decryptor()  # noqa: S305
-        plaintext = struct.pack("<II", self._password_int, _rand3())
+        plaintext = struct.pack("<II", self.__password_int, _rand3())
         return decryptor.update(plaintext) + decryptor.finalize()
 
-    def _send(self, payload: bytes, msgid: int, subcmd: int, uid: str) -> None:
+    def __send(self, payload: bytes, msgid: int, subcmd: int, uid: str) -> None:
         header = bytearray(12)
         header[0] = 0x60
         header[1] = subcmd
-        header[2] = self._dst_id
+        header[2] = self.__dst_id
         header[3] = 100
         struct.pack_into("<I", header, 4, msgid)
         struct.pack_into("<I", header, 8, len(payload))
-        self._session.send(bytes(header) + payload, uid)
+        self.__session.send(bytes(header) + payload, uid)
 
-    def _send_extended(self, cmd_payload: bytes, msgid: int, uid: str) -> None:
-        self._send(self._password_block() + cmd_payload, msgid, subcmd=0x0B, uid=uid)
+    def __send_extended(self, cmd_payload: bytes, msgid: int, uid: str) -> None:
+        self.__send(self.__password_block() + cmd_payload, msgid, subcmd=0x0B, uid=uid)
 
-    async def _wait_broadcast[T](
+    async def __wait_broadcast[T](
         self, slot: _BroadcastSlot[T], since_seq: int, timeout_s: float, matches: Callable[[T], bool] | None = None
     ) -> T | None:
         """Wait for the next cached update after `since_seq` satisfying `matches` (any update if None)."""
@@ -572,97 +577,90 @@ class _Wire:
 
     async def get_settings(self, uid: str, timeout_s: float = 8.0) -> _SettingsDump | None:
         LOGGER.debug("[%s] get_settings()", uid)
-        since_seq = self._session.settings.seq
-        self._send(self._password_block() + bytes(4), self._session.alloc_msgid(), subcmd=0x03, uid=uid)
-        return await self._wait_broadcast(self._session.settings, since_seq, timeout_s)
+        since_seq = self.__session.settings.seq
+        self.__send(self.__password_block() + bytes(4), self.__session.alloc_msgid(), subcmd=0x03, uid=uid)
+        return await self.__wait_broadcast(self.__session.settings, since_seq, timeout_s)
 
     async def get_settings_matching(
         self, uid: str, matches: Callable[[_SettingsDump], bool], timeout_s: float
     ) -> _SettingsDump | None:
-        """
-        Wait for a settings dump (explicit reply or unprompted broadcast) whose decoded values satisfy `matches`.
-
-        Unlike `get_settings`, a dump that doesn't satisfy `matches` is simply not a match and dispatch keeps
-        waiting -- so a stale re-broadcast of the pre-write dump can't win the race and be mistaken for confirmation.
-        `since_seq` is captured before sending the write, so a dump cached from before this call can't be mistaken
-        for confirmation either.
-        """
-        since_seq = self._session.settings.seq
-        self._send(self._password_block() + bytes(4), self._session.alloc_msgid(), subcmd=0x03, uid=uid)
-        return await self._wait_broadcast(self._session.settings, since_seq, timeout_s, matches)
+        """Like `get_settings`, but keeps waiting on a dump that doesn't satisfy `matches` instead of confirming."""
+        since_seq = self.__session.settings.seq
+        self.__send(self.__password_block() + bytes(4), self.__session.alloc_msgid(), subcmd=0x03, uid=uid)
+        return await self.__wait_broadcast(self.__session.settings, since_seq, timeout_s, matches)
 
     async def set_setting(self, setting_type: int, value: int, uid: str) -> None:
         """Fire-and-forget the write; `async_set_setting` verifies via the settings dump read-back."""
         LOGGER.debug("[%s] set_setting(type=%s, value=%s)", uid, setting_type, value)
-        payload = self._password_block() + bytes.fromhex("01000100") + struct.pack("<II", setting_type, value)
-        self._send(payload, self._session.alloc_msgid(), subcmd=0x0B, uid=uid)
+        payload = self.__password_block() + bytes.fromhex("01000100") + struct.pack("<II", setting_type, value)
+        self.__send(payload, self.__session.alloc_msgid(), subcmd=0x0B, uid=uid)
 
     async def get_record_quality(self, uid: str, timeout_s: float = 5.0) -> int | None:
         LOGGER.debug("[%s] get_record_quality()", uid)
-        since_seq = self._session.record_quality.seq
-        self._send_extended(bytes([0xF0, 0, 0, 0, 0, 0]), self._session.alloc_msgid(), uid)
-        return await self._wait_broadcast(self._session.record_quality, since_seq, timeout_s)
+        since_seq = self.__session.record_quality.seq
+        self.__send_extended(bytes([0xF0, 0, 0, 0, 0, 0]), self.__session.alloc_msgid(), uid)
+        return await self.__wait_broadcast(self.__session.record_quality, since_seq, timeout_s)
 
     async def get_record_quality_matching(self, uid: str, value: int, timeout_s: float) -> int | None:
         """Apply the same reasoning as `get_settings_matching`, for the record-quality reply."""
-        since_seq = self._session.record_quality.seq
-        self._send_extended(bytes([0xF0, 0, 0, 0, 0, 0]), self._session.alloc_msgid(), uid)
-        return await self._wait_broadcast(self._session.record_quality, since_seq, timeout_s, lambda v: v == value)
+        since_seq = self.__session.record_quality.seq
+        self.__send_extended(bytes([0xF0, 0, 0, 0, 0, 0]), self.__session.alloc_msgid(), uid)
+        return await self.__wait_broadcast(self.__session.record_quality, since_seq, timeout_s, lambda v: v == value)
 
     async def set_record_quality(self, value: int, uid: str) -> None:
         LOGGER.debug("[%s] set_record_quality(value=%s)", uid, value)
-        self._send_extended(bytes([0xEF, 0, value & 0xFF, 0, 0, 0]), self._session.alloc_msgid(), uid)
+        self.__send_extended(bytes([0xEF, 0, value & 0xFF, 0, 0, 0]), self.__session.alloc_msgid(), uid)
 
     async def get_sd_card_capacity(self, uid: str, timeout_s: float = 5.0) -> tuple[int, int, int] | None:
         LOGGER.debug("[%s] get_sd_card_capacity()", uid)
-        since_seq = self._session.sd_capacity.seq
-        self._send_extended(bytes([0x50, 0, 0, 0]), self._session.alloc_msgid(), uid)
-        return await self._wait_broadcast(self._session.sd_capacity, since_seq, timeout_s)
+        since_seq = self.__session.sd_capacity.seq
+        self.__send_extended(bytes([0x50, 0, 0, 0]), self.__session.alloc_msgid(), uid)
+        return await self.__wait_broadcast(self.__session.sd_capacity, since_seq, timeout_s)
 
     async def format_sd_card(self, sd_id: int, uid: str, timeout_s: float = 3.0) -> str:
         LOGGER.debug("[%s] format_sd_card(sd_id=%s)", uid, sd_id)
-        msgid = self._session.alloc_msgid()
+        msgid = self.__session.alloc_msgid()
 
         def send() -> None:
-            self._send_extended(bytes([0x51, 0, 0, 0, sd_id & 0xFF]), msgid, uid)
+            self.__send_extended(bytes([0x51, 0, 0, 0, sd_id & 0xFF]), msgid, uid)
 
-        data = await self._session.send_and_wait_format(send, timeout_s)
+        data = await self.__session.send_and_wait_format(send, timeout_s)
         return _FORMAT_RESULT_CODES.get(data[13], f"unknown_{data[13]}") if data is not None else "no_response"
 
     async def get_device_time(self, uid: str, timeout_s: float = 5.0) -> datetime | None:
         LOGGER.debug("[%s] get_device_time()", uid)
-        since_seq = self._session.device_time.seq
-        self._send_extended(bytes([0x0A, 0, 0, 0, 0, 0, 0, 0, 0]), self._session.alloc_msgid(), uid)
-        return await self._wait_broadcast(self._session.device_time, since_seq, timeout_s)
+        since_seq = self.__session.device_time.seq
+        self.__send_extended(bytes([0x0A, 0, 0, 0, 0, 0, 0, 0, 0]), self.__session.alloc_msgid(), uid)
+        return await self.__wait_broadcast(self.__session.device_time, since_seq, timeout_s)
 
     async def set_device_time(self, dt: datetime, uid: str, timeout_s: float = 3.0) -> bool:
         LOGGER.debug("[%s] set_device_time(dt=%s)", uid, dt)
-        msgid = self._session.alloc_msgid()
-        fut = self._session.begin_msgid(msgid, subcmd=0x0B)
+        msgid = self.__session.alloc_msgid()
+        fut = self.__session.begin_msgid(msgid, subcmd=0x0B)
         body = bytes([0x0B, 0, 0, 0]) + struct.pack("<H", dt.year) + bytes([dt.month, dt.day, dt.hour, dt.minute])
-        self._send_extended(body, msgid, uid)
-        return await self._session.wait_msgid(fut, msgid, timeout_s) is not None
+        self.__send_extended(body, msgid, uid)
+        return await self.__session.wait_msgid(fut, msgid, timeout_s) is not None
 
     async def get_device_info(self, uid: str, timeout_s: float = 5.0) -> dict[str, str | int] | None:
         LOGGER.debug("[%s] get_device_info()", uid)
-        since_seq = self._session.device_info.seq
-        payload = self._password_block() + bytes([0x27]) + bytes(35)
-        self._send(payload, self._session.alloc_msgid(), subcmd=0x03, uid=uid)
-        return await self._wait_broadcast(self._session.device_info, since_seq, timeout_s)
+        since_seq = self.__session.device_info.seq
+        payload = self.__password_block() + bytes([0x27]) + bytes(35)
+        self.__send(payload, self.__session.alloc_msgid(), subcmd=0x03, uid=uid)
+        return await self.__wait_broadcast(self.__session.device_info, since_seq, timeout_s)
 
     _DEVICE_UPDATE_CHECK_TAIL = bytes.fromhex("1d6ce42301000000e0ae59cb01000000")
 
     async def get_device_update_check(self, uid: str, timeout_s: float = 15.0) -> dict[str, str | int] | None:
         LOGGER.debug("[%s] get_device_update_check()", uid)
-        since_seq = self._session.update_check.seq
-        payload = self._password_block() + self._DEVICE_UPDATE_CHECK_TAIL
-        self._send(payload, self._session.alloc_msgid(), subcmd=0x03, uid=uid)
-        return await self._wait_broadcast(self._session.update_check, since_seq, timeout_s)
+        since_seq = self.__session.update_check.seq
+        payload = self.__password_block() + self._DEVICE_UPDATE_CHECK_TAIL
+        self.__send(payload, self.__session.alloc_msgid(), subcmd=0x03, uid=uid)
+        return await self.__wait_broadcast(self.__session.update_check, since_seq, timeout_s)
 
     _GETRECFILES_FIELD = bytes.fromhex("03010000")
 
     @staticmethod
-    def _pack_datetime(dt: datetime) -> bytes:
+    def __pack_datetime(dt: datetime) -> bytes:
         return struct.pack("<HBBBB", dt.year, dt.month, dt.day, dt.hour, dt.minute)
 
     async def get_rec_files(
@@ -670,18 +668,22 @@ class _Wire:
     ) -> list[_RecFileEntry]:
         LOGGER.debug("[%s] get_rec_files(start=%s, end=%s)", uid, start, end)
         payload = (
-            self._password_block() + self._GETRECFILES_FIELD + self._pack_datetime(start) + self._pack_datetime(end)
+            self.__password_block() + self._GETRECFILES_FIELD + self.__pack_datetime(start) + self.__pack_datetime(end)
         )
-        msgid = self._session.alloc_msgid()
+        msgid = self.__session.alloc_msgid()
 
         def send() -> None:
-            self._send(payload, msgid, subcmd=0x0B, uid=uid)
+            self.__send(payload, msgid, subcmd=0x0B, uid=uid)
 
-        data = await self._session.send_and_wait_rec_files(send, timeout_s)
+        data = await self.__session.send_and_wait_rec_files(send, timeout_s)
         if data is None:
             msg = "get_rec_files: no complete reply from camera"
             raise OSError(msg)
-        return _decode_rec_files(data)
+        try:
+            return _decode_rec_files(data)
+        except (struct.error, IndexError, ValueError) as err:
+            msg = f"get_rec_files: malformed reply from camera: {err}"
+            raise APIError(msg) from err
 
 
 def _is_settings_dump(data: bytes) -> bool:
@@ -781,9 +783,6 @@ def _decode_rec_files(data: bytes) -> list[_RecFileEntry]:
     return entries
 
 
-# -- async client used by the integration -------------------------------------
-
-
 async def _run_blocking[T](hass: HomeAssistant, fn: Callable[[], T]) -> T:
     """Run a blocking call in the executor, mapping raw exceptions to our hierarchy."""
     try:
@@ -804,78 +803,81 @@ class GwellIPCamClient:
     """Async-facing client for a single Gwell IP camera."""
 
     def __init__(self, hass: HomeAssistant, host: str, port: int, password_hash: str, entry_id: str) -> None:
-        """Initialize the client for a specific camera."""
-        self._hass = hass
-        self._host = host
-        self._port = int(port)
-        self._password_int = entry_password(password_hash)
-        self._entry_id = entry_id
-        self._rtsp_session = RTSPSession(host)
-        self._rtsp_proxy = RTSPProxyServer(self._rtsp_session)
-        self._quick_record_store: Store[dict[str, int | None]] | None = None
-        self._quick_record_saved_type: int | None = None
-        self._quick_record_lock = asyncio.Lock()
-        self._wire: _WireSession | None = None
-        self._dst_id = 0
-        self._wire_connect_lock = asyncio.Lock()
+        """Initialize; the UDP wire session itself is opened lazily on first use, not here."""
+        self.__hass = hass
+        self.__host = host
+        self.__port = int(port)
+        self.__password_int = entry_password(password_hash)
+        self.__entry_id = entry_id
+        self.__rtsp_session = RTSPSession(host)
+        self.__rtsp_proxy = RTSPProxyServer(self.__rtsp_session)
+        self.__quick_record_store: Store[dict[str, int | None]] | None = None
+        self.__quick_record_saved_type: int | None = None
+        self.__quick_record_lock = asyncio.Lock()
+        self.__wire: _WireSession | None = None
+        self.__dst_id = 0
+        self.__wire_connect_lock = asyncio.Lock()
 
-    def _get_quick_record_store(self) -> Store[dict[str, int | None]]:
-        if self._quick_record_store is None:
-            self._quick_record_store = Store(self._hass, version=1, key=f"gwell_ipcam.{self._entry_id}.quick_record")
-        return self._quick_record_store
+    def __get_quick_record_store(self) -> Store[dict[str, int | None]]:
+        if self.__quick_record_store is None:
+            self.__quick_record_store = Store(self.__hass, version=1, key=f"gwell_ipcam.{self.__entry_id}.quick_record")
+        return self.__quick_record_store
 
-    async def _get_wire(self) -> _Wire:
-        if self._wire is None:
-            async with self._wire_connect_lock:
-                if self._wire is None:
-                    session = _WireSession(self._host)
+    async def __get_wire(self) -> _Wire:
+        if self.__wire is None:
+            async with self.__wire_connect_lock:
+                if self.__wire is None:
+                    session = _WireSession(self.__host)
+                    sock: socket.socket | None = None
                     try:
-                        host_ip = await self._hass.async_add_executor_job(_resolve_ipv4, self._host)
+                        host_ip = await self.__hass.async_add_executor_job(_resolve_ipv4, self.__host)
                         loop = asyncio.get_running_loop()
                         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                        sock.bind(("0.0.0.0", self._port))  # noqa: S104 -- any local interface
-                        sock.connect((host_ip, self._port))
+                        sock.bind(("0.0.0.0", self.__port))  # noqa: S104 -- any local interface
+                        sock.connect((host_ip, self.__port))
                         await loop.create_datagram_endpoint(lambda: session, sock=sock)
                     except OSError as err:
+                        if sock is not None:
+                            sock.close()
                         raise APIConnectionError(str(err)) from err
-                    self._wire = session
-                    self._dst_id = int(host_ip.split(".")[-1])
-        return _Wire(self._wire, self._dst_id, self._password_int)
+                    self.__wire = session
+                    self.__dst_id = int(host_ip.split(".")[-1])
+        return _Wire(self.__wire, self.__dst_id, self.__password_int)
 
     async def async_close_wire(self) -> None:
         """Close the persistent UDP session; safe to call even if it was never opened."""
-        if self._wire is not None:
-            self._wire.close()
-            self._wire = None
+        if self.__wire is not None:
+            self.__wire.close()
+            self.__wire = None
 
     @property
     def rtsp_session(self) -> RTSPSession:
         """The shared upstream RTSP session (for the assist_satellite mic feed)."""
-        return self._rtsp_session
+        return self.__rtsp_session
 
     async def async_start_streaming(self) -> None:
         """Open the shared RTSP session and start the local header-fixing proxy; kept open for the entry's lifetime."""
-        await self._rtsp_session.start()
-        await self._rtsp_proxy.start()
+        await self.__rtsp_session.start()
+        await self.__rtsp_proxy.start()
 
     async def async_stop_streaming(self) -> None:
         """Stop the local proxy and close the shared RTSP session."""
         started = time.monotonic()
         LOGGER.debug("Stopping local RTSP proxy")
-        await self._rtsp_proxy.stop()
+        await self.__rtsp_proxy.stop()
         LOGGER.debug("Stopped local RTSP proxy in %.3fs, stopping upstream RTSP session", time.monotonic() - started)
-        await self._rtsp_session.stop()
+        await self.__rtsp_session.stop()
         await self.async_close_wire()
         LOGGER.debug("Stopped streaming in %.3fs total", time.monotonic() - started)
 
     async def async_ptz(self, direction: str, *, steps: int = 1, step_delay_ms: int = 200) -> None:
         """Send `steps` PTZ nudges in `direction` (already mapped for image-reverse by the caller)."""
-        await self._rtsp_session.ptz(direction, steps=steps, step_delay_ms=step_delay_ms)
+        await self.__rtsp_session.ptz(direction, steps=steps, step_delay_ms=step_delay_ms)
 
     async def async_talk(self, pcm16_8khz_mono: bytes) -> None:
-        """Push 8kHz mono PCM16 audio to the camera's speaker over a fresh talk session."""
-        async with TalkSession(self._host) as talk:
+        """Push audio to the camera's speaker over a fresh talk session."""
+        async with TalkSession(self.__host) as talk:
             await talk.send_pcm16(pcm16_8khz_mono)
 
     @staticmethod
@@ -891,7 +893,7 @@ class GwellIPCamClient:
 
     @staticmethod
     def hash_password(password: str) -> str:
-        """Hash a plaintext password using the camera's hashing scheme."""
+        """Hash via `entry_password` (short numeric PINs pass through as-is)."""
         return str(entry_password(password))
 
     @staticmethod
@@ -905,15 +907,15 @@ class GwellIPCamClient:
 
     async def async_get_identity(self) -> CameraIdentity:
         """Fetch the camera's identity. Name is synthesized -- no wire field carries one."""
-        found = await self.async_discover_one(self._hass, self._host)
+        found = await self.async_discover_one(self.__hass, self.__host)
         if found is None:
-            msg = f"no discovery reply from {self._host}"
+            msg = f"no discovery reply from {self.__host}"
             raise APIConnectionError(msg)
         contact_id = found.contact_id
-        wire = await self._get_wire()
+        wire = await self.__get_wire()
         info = await wire.get_device_info(_new_uid())
         if info is None:
-            msg = f"camera at {self._host} did not respond to an authenticated request"
+            msg = f"camera at {self.__host} did not respond to an authenticated request"
             raise APIAuthError(msg)
         return CameraIdentity(
             contact_id=contact_id,
@@ -924,7 +926,7 @@ class GwellIPCamClient:
 
     async def async_get_camera_time(self, *, uid: str | None = None) -> datetime:
         """Fetch the camera's clock, localized to HA's configured timezone (camera keeps no tz of its own)."""
-        wire = await self._get_wire()
+        wire = await self.__get_wire()
         naive = await wire.get_device_time(uid or _new_uid())
         if naive is None:
             msg = "no response from camera"
@@ -932,17 +934,11 @@ class GwellIPCamClient:
         return naive.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
 
     async def async_sync_time(self, *, uid: str | None = None) -> datetime:
-        """
-        Push HA's current local time to the camera's clock, verify it actually changed, and return it.
-
-        The write's ack can't be trusted any more than `set_setting`'s could (see `async_set_setting`),
-        and the write is minute-granularity besides, so an exact-match read-back isn't meaningful here --
-        instead confirm the clock is now measurably closer to the real time than before writing.
-        """
+        """Push HA's time to the camera and confirm drift decreased (exact match isn't meaningful here)."""
         before = await self.async_get_camera_time(uid=uid)
         before_drift = abs((dt_util.now() - before).total_seconds())
         now = dt_util.now().replace(tzinfo=None)
-        wire = await self._get_wire()
+        wire = await self.__get_wire()
         await wire.set_device_time(now, uid or _new_uid())
         after = await self.async_get_camera_time(uid=uid)
         after_drift = abs((dt_util.now() - after).total_seconds())
@@ -952,21 +948,21 @@ class GwellIPCamClient:
         return after
 
     async def async_get_storage_state(self, *, uid: str | None = None) -> StorageState:
-        """Fetch SD card storage usage."""
-        wire = await self._get_wire()
+        """Fetch SD card storage usage; raises `APIError` if the reply is internally inconsistent (free > total)."""
+        wire = await self.__get_wire()
         capacity = await wire.get_sd_card_capacity(uid or _new_uid())
         if capacity is None:
             msg = "no response from camera"
             raise APIConnectionError(msg)
         total, free, _sd_id = capacity
-        if free > total or total < 0 or free < 0:
+        if free > total:
             msg = f"implausible SD card capacity (total={total}, free={free})"  # garbled reply, not a real reading
             raise APIError(msg)
         return StorageState(used_mb=total - free, total_mb=total)
 
     async def async_get_settings(self, *, uid: str | None = None) -> dict[int, int]:
         """Fetch the full settingType -> value dump (noise IDs filtered out)."""
-        wire = await self._get_wire()
+        wire = await self.__get_wire()
         dump = await wire.get_settings(uid or _new_uid())
         if dump is None:
             msg = "no response from camera"
@@ -975,7 +971,7 @@ class GwellIPCamClient:
 
     async def async_set_setting(self, setting_type: int, value: int, *, uid: str | None = None) -> dict[int, int]:
         """Write a settingType/value pair, wait for a dump confirming it, and return that freshly-confirmed dump."""
-        wire = await self._get_wire()
+        wire = await self.__get_wire()
         resolved_uid = uid or _new_uid()
         await wire.set_setting(setting_type, value, resolved_uid)
         dump = await wire.get_settings_matching(
@@ -997,63 +993,48 @@ class GwellIPCamClient:
         return await self.async_set_setting(SETTING_RECORD_PLAN_TIME, encode_record_plan_time(start, end), uid=uid)
 
     async def async_set_recording_state(self, *, enabled: bool, uid: str | None = None) -> dict[int, int]:
-        """Start or stop recording."""
+        """Start or stop recording by writing `SETTING_REMOTE_RECORD`."""
         return await self.async_set_setting(SETTING_REMOTE_RECORD, 1 if enabled else 0, uid=uid)
 
     async def async_load_quick_record_state(self) -> None:
         """Load the persisted quick-record state once at startup; call before reading `quick_record_active`."""
-        data = await self._get_quick_record_store().async_load()
-        self._quick_record_saved_type = data.get("saved_record_type") if data else None
+        data = await self.__get_quick_record_store().async_load()
+        self.__quick_record_saved_type = data.get("saved_record_type") if data else None
 
     @property
     def quick_record_active(self) -> bool:
-        """Whether a quick-record session is currently in progress."""
-        return self._quick_record_saved_type is not None
+        """Whether a quick-record session is in progress; call `async_load_quick_record_state` first at startup."""
+        return self.__quick_record_saved_type is not None
 
     async def async_toggle_quick_record(
         self, *, current_settings: dict[int, int] | None = None, uid: str | None = None
     ) -> tuple[bool, dict[int, int]]:
-        """
-        First press: switch to Manual and start recording, remembering the prior mode to restore later.
-
-        Serialized by `_quick_record_lock`: each wire round-trip in here used to take seconds, easy to
-        double-press before the first one finished, which would race both calls against the same state.
-        Returns the freshly-confirmed settings dump too, since a coordinator refresh right after this can
-        race an already-in-flight one and pick up stale data instead of what was just verified here.
-
-        `saved_type` is committed right after the first write, not after both: if the second write then
-        fails, a retry still restores the true original mode instead of losing it to a re-read that would
-        now see the already-applied Manual switch as the "original" mode.
-
-        `current_settings` should be the coordinator's already-verified-fresh cache when available -- an
-        independent `async_get_settings()` read here can lose the race to a stale re-broadcast still in
-        flight from a just-prior write, capturing the wrong "current" mode to restore later.
-        """
-        async with self._quick_record_lock:
-            if self._quick_record_saved_type is None:
+        """Toggle Manual/quick recording; `__quick_record_lock` serializes it against a racing double-press."""
+        async with self.__quick_record_lock:
+            if self.__quick_record_saved_type is None:
                 settings = current_settings if current_settings is not None else await self.async_get_settings(uid=uid)
                 saved_type = settings.get(SETTING_RECORD_TYPE, RECORD_TYPE_MANUAL)
                 await self.async_set_setting(SETTING_RECORD_TYPE, RECORD_TYPE_MANUAL, uid=uid)
-                self._quick_record_saved_type = saved_type
-                await self._get_quick_record_store().async_save({"saved_record_type": saved_type})
+                self.__quick_record_saved_type = saved_type
+                await self.__get_quick_record_store().async_save({"saved_record_type": saved_type})
                 fresh = await self.async_set_recording_state(enabled=True, uid=uid)
                 return True, fresh
 
-            saved_type = self._quick_record_saved_type
+            saved_type = self.__quick_record_saved_type
             await self.async_set_recording_state(enabled=False, uid=uid)
             fresh = await self.async_set_setting(SETTING_RECORD_TYPE, saved_type, uid=uid)
-            self._quick_record_saved_type = None
-            await self._get_quick_record_store().async_save({"saved_record_type": None})
+            self.__quick_record_saved_type = None
+            await self.__get_quick_record_store().async_save({"saved_record_type": None})
             return False, fresh
 
     async def async_get_record_quality(self, *, uid: str | None = None) -> int | None:
         """Fetch Record Quality (0-4)."""
-        wire = await self._get_wire()
+        wire = await self.__get_wire()
         return await wire.get_record_quality(uid or _new_uid())
 
     async def async_set_record_quality(self, value: int, *, uid: str | None = None) -> int:
-        """Set Record Quality (0-4), wait for a reply confirming it, and return that freshly-confirmed value."""
-        wire = await self._get_wire()
+        """Wait for a reply confirming the value actually changed, and return that freshly-confirmed value."""
+        wire = await self.__get_wire()
         resolved_uid = uid or _new_uid()
         await wire.set_record_quality(value, resolved_uid)
         result = await wire.get_record_quality_matching(resolved_uid, value, _SET_SETTING_VERIFY_TIMEOUT_S)
@@ -1063,8 +1044,8 @@ class GwellIPCamClient:
         return result
 
     async def async_format_sd_card(self, *, uid: str | None = None) -> None:
-        """Format the camera's SD card."""
-        wire = await self._get_wire()
+        """Look up the current sd_id from a capacity read, then format that card."""
+        wire = await self.__get_wire()
         resolved_uid = uid or _new_uid()
         capacity = await wire.get_sd_card_capacity(resolved_uid)
         if capacity is None:
@@ -1077,10 +1058,10 @@ class GwellIPCamClient:
             raise APIError(msg)
 
     async def async_get_recordings(self, *, uid: str | None = None) -> list[Recording]:
-        """List recordings currently stored on the camera's SD card."""
+        """List recordings from the last `_RECORDINGS_LOOKBACK`, not the SD card's full history."""
         end = dt_util.now().replace(tzinfo=None)
         start = end - _RECORDINGS_LOOKBACK
-        wire = await self._get_wire()
+        wire = await self.__get_wire()
         entries = await wire.get_rec_files(start, end, uid or _new_uid())
         return [_to_recording(entry) for entry in entries]
 
@@ -1092,11 +1073,11 @@ class GwellIPCamClient:
 
     async def async_get_live_stream_url(self) -> str | None:
         """Return the local proxy's RTSP URL, or None if streaming hasn't been started yet."""
-        return f"rtsp://127.0.0.1:{self._rtsp_proxy.port}{RTSP_PATH}"
+        return f"rtsp://127.0.0.1:{self.__rtsp_proxy.port}{RTSP_PATH}"
 
     async def async_get_firmware_info(self) -> FirmwareInfo:
         """Check whether a firmware update is available for this camera."""
-        wire = await self._get_wire()
+        wire = await self.__get_wire()
         info = await wire.get_device_update_check(_new_uid())
         if info is None:
             msg = "no response from camera"
@@ -1109,7 +1090,7 @@ class GwellIPCamClient:
         )
 
     async def async_install_firmware_update(self) -> None:
-        """Stub: triggering an install has never been reverse-engineered, only checking for one."""
+        """Not implemented: no known wire command for triggering an install (only checking for one)."""
         msg = "firmware installation is not supported by this integration yet"
         raise APIError(msg)
 

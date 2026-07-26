@@ -55,7 +55,7 @@ class GwellIPCamMediaPlayer(GwellIPCamEntity[GwellIPCamCoordinator], MediaPlayer
         self._attr_unique_id = f"{coordinator.config_entry.unique_id}_speaker"
 
     async def async_play_media(self, media_type: str, media_id: str, **kwargs: object) -> None:  # noqa: ARG002
-        """Decode the given media to 8kHz mono PCM16 and push it to the camera's speaker."""
+        """Decode and push the given media to the camera's speaker, reporting PLAYING/IDLE state around it."""
         LOGGER.debug("User played media %s (%s) on %s", media_id, media_type, self.entity_id)
         client = self.coordinator.config_entry.runtime_data.client
         self._attr_state = MediaPlayerState.PLAYING

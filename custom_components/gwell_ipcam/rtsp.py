@@ -30,6 +30,7 @@ async def cancel_and_wait(task: asyncio.Task) -> None:
     with contextlib.suppress(asyncio.CancelledError, TimeoutError):
         await asyncio.wait_for(task, timeout=_CANCEL_TIMEOUT_S)
 
+
 VIDEO_CHANNELS = (0, 1)
 AUDIO_CHANNELS = (2, 3)
 
@@ -61,7 +62,7 @@ class _Response:
             key, sep, value = line.partition(":")
             if sep:
                 headers[key.strip().lower()] = value.strip()
-        return cls(status_line=lines[0], headers=headers, body=body, cseq=int(headers.get("cseq", "0")))
+        return cls(status_line=lines[0], headers=headers, body=body, cseq=_parse_cseq(headers.get("cseq", "0")))
 
     @property
     def ok(self) -> bool:
@@ -74,23 +75,32 @@ class _Response:
         return raw.split(";")[0] if raw else None
 
 
-def _parse_content_length(header_text: str) -> int:
-    """
-    Return the body length, or 0 if there's no such header.
+_MAX_CONTENT_LENGTH = 262144
 
-    A header present but unparseable is not the same as absent: silently treating it as 0 would
-    misplace every subsequent message boundary, so that raises instead of returning a value
-    indistinguishable from "no body".
-    """
+
+def _parse_content_length(header_text: str) -> int:
+    """Return the body length, or 0 if absent; raises rather than treating an unparseable/implausible header as 0."""
     for line in header_text.split("\r\n")[1:]:
         key, sep, value = line.partition(":")
         if sep and key.strip().lower() == "content-length":
             try:
-                return int(value.strip())
+                length = int(value.strip())
             except ValueError as exception:
                 msg = f"unparseable Content-Length: {value!r}"
                 raise RTSPError(msg) from exception
+            if not 0 <= length <= _MAX_CONTENT_LENGTH:
+                msg = f"implausible Content-Length: {length}"
+                raise RTSPError(msg)
+            return length
     return 0
+
+
+def _parse_cseq(value: str) -> int:
+    try:
+        return int(value)
+    except ValueError as exception:
+        msg = f"unparseable CSeq: {value!r}"
+        raise RTSPError(msg) from exception
 
 
 async def _simple_request(
@@ -140,50 +150,44 @@ class RTSPSession:
 
     def __init__(self, host: str) -> None:
         """Initialize with the camera's LAN host/IP. Call start() before use."""
-        self._host = host
-        self._reader: asyncio.StreamReader | None = None
-        self._writer: asyncio.StreamWriter | None = None
-        self._reader_task: asyncio.Task[None] | None = None
-        self._supervisor_task: asyncio.Task[None] | None = None
-        self._cseq = 0
-        self._sdp: str | None = None
-        self._pending: dict[int, asyncio.Future[_Response]] = {}
-        self._subscribers: dict[int, list[asyncio.Queue[tuple[int, bytes]]]] = {}
-        self._online = False
-        self._last_error: Exception | None = None
+        self.__host = host
+        self.__reader: asyncio.StreamReader | None = None
+        self.__writer: asyncio.StreamWriter | None = None
+        self.__reader_task: asyncio.Task[None] | None = None
+        self.__supervisor_task: asyncio.Task[None] | None = None
+        self.__cseq = 0
+        self.__sdp: str | None = None
+        self.__pending: dict[int, asyncio.Future[_Response]] = {}
+        self.__subscribers: dict[int, list[asyncio.Queue[tuple[int, bytes]]]] = {}
+        self.__online = False
+        self.__last_error: Exception | None = None
 
     @property
     def sdp(self) -> str | None:
         """The SDP returned by the camera's DESCRIBE, once connected."""
-        return self._sdp
+        return self.__sdp
 
     @property
     def online(self) -> bool:
         """Whether the upstream connection is currently established."""
-        return self._online
+        return self.__online
 
     @property
     def last_error(self) -> Exception | None:
         """The most recent connection error, or None while online."""
-        return self._last_error
+        return self.__last_error
 
     async def start(self) -> None:
-        """
-        Connect once before returning, then hand off to the supervising reconnect loop.
-
-        Without this, the camera entity/proxy went live before the upstream was actually connected --
-        HA's stream would immediately DESCRIBE the local proxy, get a 454 (no SDP yet), and fall into
-        its own escalating restart backoff (10s, 20s, 30s, 60s...) for a connection that was about to
-        succeed a moment later anyway.
-        """
+        """Connect once before returning (so the proxy never sees a premature DESCRIBE), then start reconnecting."""
         await self.__try_connect_once()
-        self._supervisor_task = asyncio.get_running_loop().create_task(self.__supervise())
+        self.__supervisor_task = asyncio.get_running_loop().create_task(self.__supervise())
 
     async def __try_connect_once(self) -> None:
         """Attempt one connection, updating online/offline state; never raises."""
         try:
             await self.__connect_once()
         except (OSError, RTSPError, TimeoutError) as exception:
+            await self.__disconnect()
             self.__mark_offline(exception)
         else:
             self.__mark_online()
@@ -191,31 +195,29 @@ class RTSPSession:
     async def stop(self) -> None:
         """Stop reconnecting and tear down the upstream connection."""
         started = time.monotonic()
-        if self._supervisor_task is not None:
-            LOGGER.debug("Cancelling RTSP supervisor task for %s", self._host)
-            await cancel_and_wait(self._supervisor_task)
-            self._supervisor_task = None
-            LOGGER.debug("Cancelled RTSP supervisor task for %s in %.3fs", self._host, time.monotonic() - started)
+        if self.__supervisor_task is not None:
+            LOGGER.debug("Cancelling RTSP supervisor task for %s", self.__host)
+            await cancel_and_wait(self.__supervisor_task)
+            self.__supervisor_task = None
+            LOGGER.debug("Cancelled RTSP supervisor task for %s in %.3fs", self.__host, time.monotonic() - started)
         await self.__disconnect()
-        LOGGER.debug("RTSPSession.stop() for %s finished in %.3fs total", self._host, time.monotonic() - started)
+        LOGGER.debug("RTSPSession.stop() for %s finished in %.3fs total", self.__host, time.monotonic() - started)
 
     async def __supervise(self) -> None:
-        has_ever_been_online = self._online
+        has_ever_been_online = self.__online
         while True:
-            if not self._online:
+            if not self.__online:
                 await self.__try_connect_once()
-                if not self._online:
-                    # Before the first successful connect, retry quickly instead of the steady-state
-                    # backoff, so a camera that's merely slow to boot doesn't cost the live stream a
-                    # full minute to start.
+                if not self.__online:
+                    # Retry quickly before the first successful connect, so a slow-booting camera doesn't cost a minute.
                     interval = _RECONNECT_INTERVAL_S if has_ever_been_online else _INITIAL_RECONNECT_INTERVAL_S
                     await asyncio.sleep(interval)
                     continue
                 has_ever_been_online = True
-            assert self._reader_task is not None  # noqa: S101
+            assert self.__reader_task is not None  # noqa: S101
             try:
-                await self._reader_task
-            except OSError as exception:
+                await self.__reader_task
+            except (OSError, RTSPError) as exception:
                 self.__mark_offline(exception)
             else:
                 self.__mark_offline(RTSPError("connection dropped"))
@@ -223,32 +225,31 @@ class RTSPSession:
             await asyncio.sleep(_RECONNECT_INTERVAL_S)
 
     def __mark_online(self) -> None:
-        was_offline = not self._online
-        self._online = True
-        self._last_error = None
+        was_offline = not self.__online
+        self.__online = True
+        self.__last_error = None
         if was_offline:
-            LOGGER.info("RTSP connection to %s is back online", self._host)
+            LOGGER.info("RTSP connection to %s is back online", self.__host)
 
     def __mark_offline(self, exception: Exception) -> None:
         # Warning only on the online->offline edge; the camera is usually off, so every retry would spam the log.
-        was_online = self._online
-        self._online = False
-        self._last_error = exception
+        was_online = self.__online
+        self.__online = False
+        self.__last_error = exception
         if was_online:
-            LOGGER.warning("RTSP connection to %s went offline: %s", self._host, exception)
+            LOGGER.warning("RTSP connection to %s went offline: %s", self.__host, exception)
         else:
-            LOGGER.debug("RTSP connection to %s still offline: %s", self._host, exception)
+            LOGGER.debug("RTSP connection to %s still offline: %s", self.__host, exception)
 
     async def __connect_once(self) -> None:
-        # Unbounded otherwise: a dead/unreachable host can leave the OS's own TCP connect timeout
-        # (which can run to a minute or more) gating `start()`, and in turn `async_setup_entry`.
-        self._reader, self._writer = await asyncio.wait_for(
-            asyncio.open_connection(self._host, RTSP_PORT), timeout=_REQUEST_TIMEOUT_S
+        # Bounded: an unreachable host's own TCP connect timeout can run to a minute or more otherwise.
+        self.__reader, self.__writer = await asyncio.wait_for(
+            asyncio.open_connection(self.__host, RTSP_PORT), timeout=_REQUEST_TIMEOUT_S
         )
-        url = f"rtsp://{self._host}{RTSP_PATH}"
+        url = f"rtsp://{self.__host}{RTSP_PATH}"
         await self.__simple(f"OPTIONS {url} RTSP/1.0")
         desc = await self.__simple(f"DESCRIBE {url} RTSP/1.0", {"Accept": "application/sdp"})
-        self._sdp = desc.body
+        self.__sdp = desc.body
         session1 = await self.__simple(
             f"SETUP {url}/track1 RTSP/1.0", {"Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"}
         )
@@ -258,33 +259,33 @@ class RTSPSession:
             {"Transport": "RTP/AVP/TCP;unicast;interleaved=2-3", "Session": session_id},
         )
         await self.__simple(f"PLAY {url} RTSP/1.0", {"Session": session_id, "Range": "npt=0.000-"})
-        self._reader_task = asyncio.get_running_loop().create_task(self.__read_loop())
+        self.__reader_task = asyncio.get_running_loop().create_task(self.__read_loop())
 
     async def __disconnect(self) -> None:
         started = time.monotonic()
-        if self._reader_task is not None:
-            await cancel_and_wait(self._reader_task)
-            self._reader_task = None
-            LOGGER.debug("Cancelled RTSP reader task for %s in %.3fs", self._host, time.monotonic() - started)
-        if self._writer is not None:
-            self._writer.close()
+        if self.__reader_task is not None:
+            await cancel_and_wait(self.__reader_task)
+            self.__reader_task = None
+            LOGGER.debug("Cancelled RTSP reader task for %s in %.3fs", self.__host, time.monotonic() - started)
+        if self.__writer is not None:
+            self.__writer.close()
             with contextlib.suppress(OSError, TimeoutError):
-                await asyncio.wait_for(self._writer.wait_closed(), timeout=_CANCEL_TIMEOUT_S)
-            LOGGER.debug("Closed RTSP writer for %s in %.3fs total", self._host, time.monotonic() - started)
-        self._reader = None
-        self._writer = None
-        self._sdp = None
-        for future in self._pending.values():
+                await asyncio.wait_for(self.__writer.wait_closed(), timeout=_CANCEL_TIMEOUT_S)
+            LOGGER.debug("Closed RTSP writer for %s in %.3fs total", self.__host, time.monotonic() - started)
+        self.__reader = None
+        self.__writer = None
+        self.__sdp = None
+        for future in self.__pending.values():
             if not future.done():
                 future.cancel()
-        self._pending.clear()
+        self.__pending.clear()
 
     @asynccontextmanager
     async def subscribe(self, channels: tuple[int, ...]) -> AsyncIterator[AsyncIterator[tuple[int, bytes]]]:
         """Yield an async iterator of (channel, payload) interleaved frames for the given channels."""
         queue: asyncio.Queue[tuple[int, bytes]] = asyncio.Queue(maxsize=256)
         for channel in channels:
-            self._subscribers.setdefault(channel, []).append(queue)
+            self.__subscribers.setdefault(channel, []).append(queue)
         try:
 
             async def _iter() -> AsyncIterator[tuple[int, bytes]]:
@@ -294,11 +295,11 @@ class RTSPSession:
             yield _iter()
         finally:
             for channel in channels:
-                self._subscribers.get(channel, []).remove(queue)
+                self.__subscribers.get(channel, []).remove(queue)
 
     async def ptz(self, direction: str, *, steps: int = 1, step_delay_ms: int = 200) -> None:
         """Send `steps` ptzCmd nudges; the wire protocol has no distance/speed concept, only a fixed step."""
-        url = f"rtsp://{self._host}{RTSP_PATH}"
+        url = f"rtsp://{self.__host}{RTSP_PATH}"
         for i in range(steps):
             await self.__request(
                 f"SET_PARAMETER {url} RTSP/1.0",
@@ -308,34 +309,34 @@ class RTSPSession:
                 await asyncio.sleep(step_delay_ms / 1000)
 
     def __next_cseq(self) -> int:
-        self._cseq += 1
-        return self._cseq
+        self.__cseq += 1
+        return self.__cseq
 
     async def __simple(self, request_line: str, extra_headers: dict[str, str] | None = None) -> _Response:
-        if self._reader is None or self._writer is None:
+        if self.__reader is None or self.__writer is None:
             msg = "RTSP session is not connected"
             raise RTSPError(msg)
-        return await _simple_request(self._reader, self._writer, self.__next_cseq(), request_line, extra_headers)
+        return await _simple_request(self.__reader, self.__writer, self.__next_cseq(), request_line, extra_headers)
 
     async def __request(self, request_line: str, extra_headers: dict[str, str] | None = None) -> _Response:
         """Send a request while the interleaved read loop is active, resolved via its CSeq."""
-        if self._writer is None:
+        if self.__writer is None:
             msg = "RTSP session is not connected"
             raise RTSPError(msg)
         cseq = self.__next_cseq()
         headers = {"CSeq": str(cseq), "User-Agent": _USER_AGENT, **(extra_headers or {})}
         header_text = "\r\n".join(f"{key}: {value}" for key, value in headers.items())
         future: asyncio.Future[_Response] = asyncio.get_running_loop().create_future()
-        self._pending[cseq] = future
+        self.__pending[cseq] = future
         request_text = f"{request_line}\r\n{header_text}\r\n\r\n"
         LOGGER.debug("RTSP send: %s %s", request_line, headers)
         WIRE_LOGGER.debug("RTSP send: %s", request_text)
-        self._writer.write(request_text.encode())
-        await self._writer.drain()
+        self.__writer.write(request_text.encode())
+        await self.__writer.drain()
         try:
             response = await asyncio.wait_for(future, timeout=_REQUEST_TIMEOUT_S)
         except TimeoutError as exception:
-            self._pending.pop(cseq, None)
+            self.__pending.pop(cseq, None)
             method = request_line.split(" ", 1)[0]
             msg = f"no response to {method}"
             raise RTSPError(msg) from exception
@@ -346,10 +347,10 @@ class RTSPSession:
         return response
 
     async def __read_loop(self) -> None:
-        assert self._reader is not None  # noqa: S101
+        assert self.__reader is not None  # noqa: S101
         buf = bytearray()
         while True:
-            chunk = await self._reader.read(4096)
+            chunk = await self.__reader.read(4096)
             if not chunk:
                 return  # __supervise() logs the offline transition
             buf.extend(chunk)
@@ -365,9 +366,9 @@ class RTSPSession:
                 total_len = _INTERLEAVE_HEADER_BYTES + length
                 if len(buf) < total_len:
                     return
-                frame = bytes(buf[_INTERLEAVE_HEADER_BYTES : total_len])
+                frame = bytes(buf[_INTERLEAVE_HEADER_BYTES:total_len])
                 del buf[:total_len]
-                for queue in self._subscribers.get(channel, ()):
+                for queue in self.__subscribers.get(channel, ()):
                     self.__enqueue_dropping_oldest(queue, channel, frame)
             elif buf[:4] == b"RTSP":
                 header_end = bytes(buf).find(b"\r\n\r\n")
@@ -383,7 +384,7 @@ class RTSPSession:
                 response = _Response.parse(header_text, body)
                 LOGGER.debug("RTSP recv: %s %s", response.status_line, response.headers)
                 WIRE_LOGGER.debug("RTSP recv: %s %s", response.status_line, header_text)
-                future = self._pending.pop(response.cseq, None)
+                future = self.__pending.pop(response.cseq, None)
                 if future is not None and not future.done():
                     future.set_result(response)
             else:
@@ -404,15 +405,15 @@ class TalkSession:
 
     def __init__(self, host: str) -> None:
         """Initialize with the camera's LAN host/IP."""
-        self._host = host
-        self._reader: asyncio.StreamReader | None = None
-        self._writer: asyncio.StreamWriter | None = None
-        self._cseq = 0
+        self.__host = host
+        self.__reader: asyncio.StreamReader | None = None
+        self.__writer: asyncio.StreamWriter | None = None
+        self.__cseq = 0
 
     async def __aenter__(self) -> Self:
         """Open the connection and issue AudioCtlCmd:OPEN."""
-        self._reader, self._writer = await asyncio.open_connection(self._host, RTSP_PORT)
-        url = f"rtsp://{self._host}{RTSP_PATH}"
+        self.__reader, self.__writer = await asyncio.open_connection(self.__host, RTSP_PORT)
+        url = f"rtsp://{self.__host}{RTSP_PATH}"
         await self.__simple(f"OPTIONS {url} RTSP/1.0")
         await self.__simple(
             f"USER_CMD_SET {url} RTSP/1.0",
@@ -424,18 +425,18 @@ class TalkSession:
         """Issue AudioCtlCmd:CLOSE and close the connection."""
         with contextlib.suppress(RTSPError, TimeoutError):
             await self.__simple(
-                f"USER_CMD_SET rtsp://{self._host}{RTSP_PATH} RTSP/1.0",
+                f"USER_CMD_SET rtsp://{self.__host}{RTSP_PATH} RTSP/1.0",
                 {"Content-length": "strlen(Content-type)", "Content-type": "AudioCtlCmd:CLOSE"},
             )
-        if self._writer is not None:
-            self._writer.close()
+        if self.__writer is not None:
+            self.__writer.close()
             with contextlib.suppress(OSError, TimeoutError):
-                await asyncio.wait_for(self._writer.wait_closed(), timeout=_CANCEL_TIMEOUT_S)
+                await asyncio.wait_for(self.__writer.wait_closed(), timeout=_CANCEL_TIMEOUT_S)
 
     async def send_pcm16(self, pcm16_8khz_mono: bytes) -> None:
         """Push PCM16 audio paced to real time; each frame is `$`+channel+u16 length+12-byte gap+320-byte payload."""
-        assert self._writer is not None  # noqa: S101
-        LOGGER.debug("RTSP talk: sending %d bytes of PCM16 audio to %s", len(pcm16_8khz_mono), self._host)
+        assert self.__writer is not None  # noqa: S101
+        LOGGER.debug("RTSP talk: sending %d bytes of PCM16 audio to %s", len(pcm16_8khz_mono), self.__host)
         header_prefix = bytes([_INTERLEAVE_MARKER, _TALK_CHANNEL])
         length_field = (_TALK_GAP_BYTES + _TALK_CHUNK_BYTES).to_bytes(2, "little")
         gap = bytes(_TALK_GAP_BYTES)
@@ -447,18 +448,18 @@ class TalkSession:
             chunk = pcm16_8khz_mono[offset : offset + _TALK_CHUNK_BYTES]
             if len(chunk) < _TALK_CHUNK_BYTES:
                 chunk = chunk + bytes(_TALK_CHUNK_BYTES - len(chunk))
-            self._writer.write(header_prefix + length_field + gap + chunk)
-            await self._writer.drain()
+            self.__writer.write(header_prefix + length_field + gap + chunk)
+            await self.__writer.drain()
             delay = (start + sent * chunk_duration_s) - loop.time()
             if delay > 0:
                 await asyncio.sleep(delay)
 
     def __next_cseq(self) -> int:
-        self._cseq += 1
-        return self._cseq
+        self.__cseq += 1
+        return self.__cseq
 
     async def __simple(self, request_line: str, extra_headers: dict[str, str] | None = None) -> _Response:
-        if self._reader is None or self._writer is None:
+        if self.__reader is None or self.__writer is None:
             msg = "talk session is not connected"
             raise RTSPError(msg)
-        return await _simple_request(self._reader, self._writer, self.__next_cseq(), request_line, extra_headers)
+        return await _simple_request(self.__reader, self.__writer, self.__next_cseq(), request_line, extra_headers)

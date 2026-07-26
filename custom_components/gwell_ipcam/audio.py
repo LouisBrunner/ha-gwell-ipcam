@@ -22,7 +22,7 @@ _RTP_HEADER_BYTES = 12
 
 
 async def async_media_id_to_pcm16_8k(hass: HomeAssistant, media_id: str) -> bytes:
-    """Resolve and decode arbitrary playable media into 8kHz mono PCM16 for the talk channel."""
+    """Decode arbitrary playable media into 8kHz mono PCM16 for the talk channel."""
     url = media_id
     if media_source.is_media_source_id(url):
         resolved = await media_source.async_resolve_media(hass, url, None)

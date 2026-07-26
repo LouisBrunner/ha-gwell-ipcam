@@ -21,7 +21,7 @@ async def async_get_config_entry_diagnostics(
     hass: HomeAssistant,  # noqa: ARG001
     entry: GwellIPCamConfigEntry,
 ) -> dict[str, Any]:
-    """Return diagnostics for a config entry."""
+    """Return diagnostics for a config entry, with the password hash redacted."""
     data = entry.runtime_data
     return {
         "entry_data": async_redact_data(dict(entry.data), TO_REDACT),

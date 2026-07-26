@@ -1,10 +1,4 @@
-"""
-Wire-format regression tests for custom_components/gwell_ipcam/api.py.
-
-Plain pytest, no HA test harness needed -- these exercise the `_Wire` request/decode layer and free
-functions directly, asserting exact byte layout against values confirmed live against a real camera
-(see docs/PROTOCOL.md). A FakeWireSession stands in for the persistent multiplexed UDP connection.
-"""
+"""Wire-format regression tests for custom_components/gwell_ipcam/api.py; plain pytest, no HA test harness needed."""
 
 from __future__ import annotations
 
@@ -48,12 +42,7 @@ class FakeSocket:
 
 
 class FakeWireSession(sc._WireSession):
-    """
-    Stands in for `_WireSession`, keeping the real dispatch/cache logic instead of re-implementing it.
-
-    `send()` immediately replays any queued replies through `datagram_received`, as if the camera answered
-    instantly -- so msgid acks, one-shot rec_files/format waiters, and broadcast slots all behave for real.
-    """
+    """`send()` immediately replays queued replies through `datagram_received`, as if the camera answered instantly."""
 
     def __init__(self, replies: list[bytes] | None = None) -> None:
         super().__init__("192.0.2.10")
@@ -77,8 +66,7 @@ def make_wire(replies: list[bytes] | None = None, dst_id: int = 0x42, password_i
 
 
 def sent(wire: sc._Wire) -> list[bytes]:
-    """Typed accessor for the FakeWireSession packets a test wire sent."""
-    return wire._session.sent  # ty: ignore[unresolved-attribute]
+    return wire._Wire__session.sent  # ty: ignore[unresolved-attribute]
 
 
 def make_wire_mock(**method_returns: object) -> MagicMock:
@@ -100,7 +88,7 @@ class _FakeHass:
         return fn()
 
 
-# -- entry_password / weak-password reroll, hardcoded against real camera output ------
+# -- entry_password / weak-password reroll ------
 
 
 @pytest.mark.parametrize(
@@ -108,11 +96,33 @@ class _FakeHass:
     [
         ("888888", 888888),  # short numeric PIN: used as-is, no hashing
         ("012345", 493320785),  # leading zero disqualifies it as a PIN -> hashed instead
-        ("camtest12", 636734832),  # non-numeric password -> hashed (confirmed live)
+        ("camtest12", 636734832),  # non-numeric password -> hashed
     ],
 )
 def test_entry_password(password, expected):
     assert sc.entry_password(password) == expected
+
+
+@pytest.mark.parametrize(
+    ("flipped", "direction", "expected"),
+    [
+        (0, "up", "up"),
+        (0, "down", "down"),
+        (0, "left", "left"),
+        (0, "right", "right"),
+        (1, "up", "up"),
+        (1, "down", "down"),
+        (1, "left", "right"),
+        (1, "right", "left"),
+    ],
+)
+def test_map_ptz_direction(flipped, direction, expected):
+    settings = {sc.SETTING_IMAGE_FLIP: flipped}
+    assert sc.map_ptz_direction(direction, settings) == expected
+
+
+def test_map_ptz_direction_defaults_to_not_flipped_when_setting_missing():
+    assert sc.map_ptz_direction("left", {}) == "left"
 
 
 def test_hash_password_round_trips_through_entry_password():
@@ -122,15 +132,25 @@ def test_hash_password_round_trips_through_entry_password():
     assert sc.entry_password(hashed) == 636734832
 
 
+def test_resolve_ipv4_passes_through_a_dotted_quad():
+    assert sc._resolve_ipv4("192.0.2.10") == "192.0.2.10"
+
+
+def test_resolve_ipv4_resolves_a_hostname_via_gethostbyname():
+    with patch("custom_components.gwell_ipcam.api.socket.gethostbyname", return_value="192.0.2.20") as gethostbyname:
+        assert sc._resolve_ipv4("camera.local") == "192.0.2.20"
+    gethostbyname.assert_called_once_with("camera.local")
+
+
 def test_client_coerces_float_port_to_int():
     client = sc.GwellIPCamClient(  # ty: ignore[invalid-argument-type]
         hass=object(), host="192.0.2.10", port=51880.0, password_hash="888888", entry_id="e"
     )
-    assert client._port == 51880
-    assert isinstance(client._port, int)
+    assert client._GwellIPCamClient__port == 51880
+    assert isinstance(client._GwellIPCamClient__port, int)
 
 
-# -- record_plan_time (settingType 5) encoding, hardcoded against MyUtils.convertPlanTime ------
+# -- record_plan_time (settingType 5) encoding ------
 
 
 @pytest.mark.parametrize(
@@ -206,6 +226,23 @@ def test_packet_is_intact_rejects_empty_data():
     assert sc._packet_is_intact(b"") is False
 
 
+def test_log_hex_redact_password_hides_the_password_block_but_not_the_rest():
+    """The DES key is fixed and public, so the password block must never appear in debug logs."""
+    header = bytes(range(12))
+    password_block = bytes([0xAA]) * 8
+    tail = bytes([0xBB]) * 4
+    packet = header + password_block + tail
+    logged = sc._log_hex_redact_password(packet)
+    assert "aa" * 8 not in logged
+    assert header.hex() in logged
+    assert tail.hex() in logged
+
+
+def test_log_hex_redact_password_falls_back_for_a_packet_too_short_to_have_one():
+    short_packet = bytes(range(10))
+    assert sc._log_hex_redact_password(short_packet) == sc._log_hex(short_packet)
+
+
 @pytest.mark.asyncio
 async def test_wire_session_drops_a_corrupted_packet_before_publishing():
     """A shape-matching reply that fails the length check must not update the cache -- it's not trustworthy."""
@@ -269,10 +306,24 @@ async def test_wire_session_a_decode_exception_does_not_prevent_other_shapes_fro
     assert session.record_quality.latest == 3
 
 
+@pytest.mark.asyncio
+async def test_wire_session_a_value_error_from_an_invalid_date_does_not_poison_other_shapes():
+    """An out-of-range month/day (ValueError, not struct.error) must be caught the same way as a bad struct decode."""
+    session = sc._WireSession("192.0.2.10")
+    invalid_month = bytes([0x0C, 0, 0, 0]) + struct.pack("<H", 2026) + bytes([0, 15, 10, 30])
+    session.datagram_received(_reply(invalid_month), ("192.0.2.10", 51880))
+    assert session.device_time.seq == 0
+
+    good = bytes([0xF1, 0, 3, 0, 0, 0])
+    session.datagram_received(_reply(good), ("192.0.2.10", 51880))
+    assert session.record_quality.seq == 1
+    assert session.record_quality.latest == 3
+
+
 def test_alloc_msgid_skips_a_msgid_still_in_use():
     session = sc._WireSession("192.0.2.10")
-    session._next_msgid = sc._MSGID_MIN
-    session._by_msgid[sc._MSGID_MIN] = (0x0B, MagicMock())
+    session._WireSession__next_msgid = sc._MSGID_MIN
+    session._WireSession__by_msgid[sc._MSGID_MIN] = (0x0B, MagicMock())
     assert session.alloc_msgid() == sc._MSGID_MIN + 1
 
 
@@ -372,9 +423,7 @@ async def test_get_settings_matching_ignores_a_dump_cached_before_the_write():
     )  # already satisfies the predicate below, but predates the write -- must not resolve the call
     wire = sc._Wire(session, dst_id=0x42, password_int=888888)
 
-    dump = await wire.get_settings_matching(
-        "u", lambda d: d.values.get(sc.SETTING_REMOTE_RECORD) == 1, timeout_s=0.01
-    )
+    dump = await wire.get_settings_matching("u", lambda d: d.values.get(sc.SETTING_REMOTE_RECORD) == 1, timeout_s=0.01)
     assert dump is None
 
 
@@ -385,9 +434,7 @@ async def test_get_settings_matching_accepts_a_dump_published_after_the_write():
     session._pending_replies = [_settings_dump_reply(sc.SETTING_REMOTE_RECORD, 1)]
     wire = sc._Wire(session, dst_id=0x42, password_int=888888)
 
-    dump = await wire.get_settings_matching(
-        "u", lambda d: d.values.get(sc.SETTING_REMOTE_RECORD) == 1, timeout_s=1.0
-    )
+    dump = await wire.get_settings_matching("u", lambda d: d.values.get(sc.SETTING_REMOTE_RECORD) == 1, timeout_s=1.0)
     assert dump is not None
     assert dump.values[sc.SETTING_REMOTE_RECORD] == 1
     assert session.settings.seq == 2  # the pre-cached dump plus the one sent by this call, not just one
@@ -408,8 +455,10 @@ async def test_set_setting_wire_format():
 
 @pytest.mark.asyncio
 async def test_set_setting_returns_without_waiting_for_ack():
+    """No reply is queued for this wire, so a set_setting that waited for an ack would hang/timeout instead."""
     wire = make_wire()
-    await wire.set_setting(4, 1, "u")
+    await asyncio.wait_for(wire.set_setting(4, 1, "u"), timeout=0.1)
+    assert len(sent(wire)) == 1
 
 
 # -- record quality: read (0xF0) and write (0xEF) are DIFFERENT commands --------
@@ -495,14 +544,14 @@ async def test_send_and_wait_format_serializes_concurrent_calls():
     await asyncio.sleep(0.01)
     assert sends == [1]  # task2 is blocked on the lock, hasn't sent yet
 
-    assert session._format_fut is not None
-    session._format_fut.set_result(_reply(bytes([0x51, 80, 0x00, 0x00, 0x10])))
+    assert session._WireSession__format_fut is not None
+    session._WireSession__format_fut.set_result(_reply(bytes([0x51, 80, 0x00, 0x00, 0x10])))
     await task1
     await asyncio.sleep(0.01)
     assert sends == [1, 2]
 
-    assert session._format_fut is not None
-    session._format_fut.set_result(_reply(bytes([0x51, 81, 0x00, 0x00, 0x20])))
+    assert session._WireSession__format_fut is not None
+    session._WireSession__format_fut.set_result(_reply(bytes([0x51, 81, 0x00, 0x00, 0x20])))
     await task2
 
 
@@ -573,9 +622,7 @@ async def test_get_rec_files_parses_entries_without_duration():
     resp = _reply(payload)
     wire = make_wire([resp])
     entries = await wire.get_rec_files(datetime(2026, 7, 1), datetime(2026, 7, 14), "u")
-    assert entries == [
-        sc._RecFileEntry(timestamp=datetime(2026, 7, 13, 8, 15, 48), disc=0, tag="M", duration_s=None)
-    ]
+    assert entries == [sc._RecFileEntry(timestamp=datetime(2026, 7, 13, 8, 15, 48), disc=0, tag="M", duration_s=None)]
 
 
 @pytest.mark.asyncio
@@ -616,6 +663,16 @@ async def test_get_rec_files_raises_on_no_response():
 
 
 @pytest.mark.asyncio
+async def test_get_rec_files_raises_api_error_on_an_entry_with_an_invalid_date():
+    """A structurally complete reply with an out-of-range month must surface as APIError, not a bare ValueError."""
+    invalid_month_entry = struct.pack("<H", 2026) + bytes([0x10, 0, 0, 0, 0]) + b"M"
+    payload = bytes([4, 0, 0, 1]) + invalid_month_entry
+    wire = make_wire([_reply(payload)])
+    with pytest.raises(sc.APIError, match="malformed reply"):
+        await wire.get_rec_files(datetime(2026, 7, 1), datetime(2026, 7, 14), "u")
+
+
+@pytest.mark.asyncio
 async def test_get_rec_files_skips_a_truncated_reply_ahead_of_a_complete_one():
     """Not msgid-correlated -- the predicate itself must skip an incomplete match rather than accepting it."""
     truncated = _reply(bytes([4, 0, 0, 2]) + (struct.pack("<H", 2026) + bytes([7, 1, 0, 0, 0, 77])))
@@ -639,15 +696,15 @@ async def test_send_and_wait_rec_files_serializes_concurrent_calls():
     assert sends == [1]  # task2 is blocked on the lock, hasn't sent yet
 
     first_entry = struct.pack("<H", 2026) + bytes([7, 1, 0, 0, 0]) + b"M"
-    assert session._rec_files_fut is not None
-    session._rec_files_fut.set_result(_reply(bytes([4, 0, 0, 1]) + first_entry))
+    assert session._WireSession__rec_files_fut is not None
+    session._WireSession__rec_files_fut.set_result(_reply(bytes([4, 0, 0, 1]) + first_entry))
     first_data = await task1
     await asyncio.sleep(0.01)
     assert sends == [1, 2]
 
     second_entry = struct.pack("<H", 2026) + bytes([7, 2, 0, 0, 0]) + b"A"
-    assert session._rec_files_fut is not None
-    session._rec_files_fut.set_result(_reply(bytes([4, 0, 0, 1]) + second_entry))
+    assert session._WireSession__rec_files_fut is not None
+    session._WireSession__rec_files_fut.set_result(_reply(bytes([4, 0, 0, 1]) + second_entry))
     second_data = await task2
 
     assert first_data is not None
@@ -702,7 +759,7 @@ async def test_toggle_quick_record_starts_then_stops_and_restores_prior_mode():
     fake_store = _FakeQuickRecordStore()
     fresh_settings = {sc.SETTING_RECORD_TYPE: 0, sc.SETTING_REMOTE_RECORD: 1}
     with (
-        patch.object(client, "_get_quick_record_store", return_value=fake_store),
+        patch.object(client, "_GwellIPCamClient__get_quick_record_store", return_value=fake_store),
         patch.object(client, "async_get_settings", AsyncMock(return_value={sc.SETTING_RECORD_TYPE: 1})),
         patch.object(client, "async_set_setting", AsyncMock(return_value=fresh_settings)) as set_setting,
         patch.object(client, "async_set_recording_state", AsyncMock(return_value=fresh_settings)) as set_recording,
@@ -731,7 +788,7 @@ async def test_quick_record_state_survives_a_reload_via_the_store():
     fake_store = _FakeQuickRecordStore()
     fake_store.saved = {"saved_record_type": 2}
     client = make_client()
-    with patch.object(client, "_get_quick_record_store", return_value=fake_store):
+    with patch.object(client, "_GwellIPCamClient__get_quick_record_store", return_value=fake_store):
         assert client.quick_record_active is False
         await client.async_load_quick_record_state()
         assert client.quick_record_active is True
@@ -744,7 +801,7 @@ async def test_quick_record_state_survives_a_reload_via_the_store():
 async def test_async_get_camera_time_localizes_naive_result():
     client = make_client()
     wire = make_wire_mock(get_device_time=datetime(2026, 7, 13, 8, 15))
-    with patch.object(client, "_get_wire", AsyncMock(return_value=wire)):
+    with patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)):
         result = await client.async_get_camera_time()
     assert result == datetime(2026, 7, 13, 8, 15, tzinfo=sc.dt_util.DEFAULT_TIME_ZONE)
 
@@ -754,7 +811,7 @@ async def test_async_get_camera_time_raises_on_no_response():
     client = make_client()
     wire = make_wire_mock(get_device_time=None)
     with (
-        patch.object(client, "_get_wire", AsyncMock(return_value=wire)),
+        patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)),
         pytest.raises(sc.APIConnectionError),
     ):
         await client.async_get_camera_time()
@@ -768,7 +825,7 @@ async def test_async_sync_time_pushes_current_local_time():
     wire = make_wire_mock(set_device_time=True)
     with (
         patch.object(client, "async_get_camera_time", AsyncMock(side_effect=[drifted, fresh])),
-        patch.object(client, "_get_wire", AsyncMock(return_value=wire)),
+        patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)),
     ):
         result = await client.async_sync_time()
     wire.set_device_time.assert_called_once()
@@ -783,7 +840,7 @@ async def test_async_sync_time_raises_when_clock_did_not_change():
     wire = make_wire_mock(set_device_time=True)
     with (
         patch.object(client, "async_get_camera_time", AsyncMock(side_effect=[drifted, drifted])),
-        patch.object(client, "_get_wire", AsyncMock(return_value=wire)),
+        patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)),
         pytest.raises(sc.APIError, match="did not change"),
     ):
         await client.async_sync_time()
@@ -793,7 +850,7 @@ async def test_async_sync_time_raises_when_clock_did_not_change():
 async def test_async_get_storage_state_computes_used_from_total_minus_free():
     client = make_client()
     wire = make_wire_mock(get_sd_card_capacity=(3691 * 16, 2894 * 16, 0x10))
-    with patch.object(client, "_get_wire", AsyncMock(return_value=wire)):
+    with patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)):
         result = await client.async_get_storage_state()
     assert result == sc.StorageState(used_mb=(3691 - 2894) * 16, total_mb=3691 * 16)
 
@@ -803,7 +860,7 @@ async def test_async_get_storage_state_raises_on_no_response():
     client = make_client()
     wire = make_wire_mock(get_sd_card_capacity=None)
     with (
-        patch.object(client, "_get_wire", AsyncMock(return_value=wire)),
+        patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)),
         pytest.raises(sc.APIConnectionError),
     ):
         await client.async_get_storage_state()
@@ -815,7 +872,7 @@ async def test_async_get_storage_state_raises_on_implausible_capacity():
     client = make_client()
     wire = make_wire_mock(get_sd_card_capacity=(100, 200, 0x10))
     with (
-        patch.object(client, "_get_wire", AsyncMock(return_value=wire)),
+        patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)),
         pytest.raises(sc.APIError, match="implausible"),
     ):
         await client.async_get_storage_state()
@@ -826,7 +883,7 @@ async def test_async_get_settings_filters_noise_via_clean_values():
     client = make_client()
     dump = sc._SettingsDump(values={0: 1, 10: 999})  # 10 is a noise ID
     wire = make_wire_mock(get_settings=dump)
-    with patch.object(client, "_get_wire", AsyncMock(return_value=wire)):
+    with patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)):
         result = await client.async_get_settings()
     assert result == {0: 1}
 
@@ -836,7 +893,7 @@ async def test_async_get_settings_raises_on_no_response():
     client = make_client()
     wire = make_wire_mock(get_settings=None)
     with (
-        patch.object(client, "_get_wire", AsyncMock(return_value=wire)),
+        patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)),
         pytest.raises(sc.APIConnectionError),
     ):
         await client.async_get_settings()
@@ -847,7 +904,7 @@ async def test_async_set_setting_succeeds_once_readback_confirms_the_value():
     client = make_client()
     dump = sc._SettingsDump(values={sc.SETTING_REMOTE_RECORD: 1})
     wire = make_wire_mock(set_setting=True, get_settings_matching=dump)
-    with patch.object(client, "_get_wire", AsyncMock(return_value=wire)):
+    with patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)):
         result = await client.async_set_setting(sc.SETTING_REMOTE_RECORD, 1)
     assert result == {sc.SETTING_REMOTE_RECORD: 1}
 
@@ -858,7 +915,7 @@ async def test_async_set_setting_raises_when_readback_never_confirms():
     client = make_client()
     wire = make_wire_mock(set_setting=True, get_settings_matching=None)
     with (
-        patch.object(client, "_get_wire", AsyncMock(return_value=wire)),
+        patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)),
         pytest.raises(sc.APIError, match="did not change"),
     ):
         await client.async_set_setting(sc.SETTING_REMOTE_RECORD, 1)
@@ -876,8 +933,28 @@ async def test_async_set_recording_state_writes_remote_record_setting():
 async def test_async_get_record_quality_delegates_to_wire():
     client = make_client()
     wire = make_wire_mock(get_record_quality=3)
-    with patch.object(client, "_get_wire", AsyncMock(return_value=wire)):
+    with patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)):
         assert await client.async_get_record_quality() == 3
+
+
+@pytest.mark.asyncio
+async def test_async_set_record_quality_succeeds_once_readback_confirms_the_value():
+    client = make_client()
+    wire = make_wire_mock(set_record_quality=None, get_record_quality_matching=3)
+    with patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)):
+        result = await client.async_set_record_quality(3)
+    assert result == 3
+
+
+@pytest.mark.asyncio
+async def test_async_set_record_quality_raises_when_readback_never_confirms():
+    client = make_client()
+    wire = make_wire_mock(set_record_quality=None, get_record_quality_matching=None)
+    with (
+        patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)),
+        pytest.raises(sc.APIError, match="did not change"),
+    ):
+        await client.async_set_record_quality(3)
 
 
 @pytest.mark.asyncio
@@ -910,7 +987,7 @@ async def test_async_format_sd_card_raises_on_failure_result():
     client = make_client()
     wire = make_wire_mock(get_sd_card_capacity=(100, 50, 0x10), format_sd_card="fail")
     with (
-        patch.object(client, "_get_wire", AsyncMock(return_value=wire)),
+        patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)),
         pytest.raises(sc.APIError, match="fail"),
     ):
         await client.async_format_sd_card()
@@ -920,8 +997,10 @@ async def test_async_format_sd_card_raises_on_failure_result():
 async def test_async_format_sd_card_succeeds_silently():
     client = make_client()
     wire = make_wire_mock(get_sd_card_capacity=(100, 50, 0x10), format_sd_card="success")
-    with patch.object(client, "_get_wire", AsyncMock(return_value=wire)):
+    with patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)):
         await client.async_format_sd_card()
+    wire.get_sd_card_capacity.assert_called_once()
+    assert wire.format_sd_card.call_args.args[0] == 0x10
 
 
 @pytest.mark.asyncio
@@ -929,7 +1008,7 @@ async def test_async_get_recordings_maps_entries():
     client = make_client()
     entry = sc._RecFileEntry(timestamp=datetime(2026, 7, 13, 8, 15, 48), disc=0, tag="A", duration_s=120)
     wire = make_wire_mock(get_rec_files=[entry])
-    with patch.object(client, "_get_wire", AsyncMock(return_value=wire)):
+    with patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)):
         result = await client.async_get_recordings()
     assert result == [sc._to_recording(entry)]
 
@@ -937,7 +1016,7 @@ async def test_async_get_recordings_maps_entries():
 @pytest.mark.asyncio
 async def test_async_get_live_stream_url_uses_local_proxy_port():
     client = make_client()
-    with patch.object(type(client._rtsp_proxy), "port", new=40000):
+    with patch.object(type(client._GwellIPCamClient__rtsp_proxy), "port", new=40000):
         url = await client.async_get_live_stream_url()
     assert url == f"rtsp://127.0.0.1:40000{sc.RTSP_PATH}"
 
@@ -947,7 +1026,7 @@ async def test_async_get_firmware_info_reports_update_available():
     client = make_client()
     info = {"result": 1, "cur_version": "21.0.0.30", "upg_version": "21.0.0.31"}
     wire = make_wire_mock(get_device_update_check=info)
-    with patch.object(client, "_get_wire", AsyncMock(return_value=wire)):
+    with patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)):
         result = await client.async_get_firmware_info()
     assert result == sc.FirmwareInfo(latest_version="21.0.0.31", release_summary=None, release_url=None)
 
@@ -957,7 +1036,7 @@ async def test_async_get_firmware_info_reports_no_update():
     client = make_client()
     info = {"result": 53, "cur_version": "21.0.0.30", "upg_version": "0.0.0.0"}  # noqa: S104 -- a version string
     wire = make_wire_mock(get_device_update_check=info)
-    with patch.object(client, "_get_wire", AsyncMock(return_value=wire)):
+    with patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)):
         result = await client.async_get_firmware_info()
     assert result == sc.FirmwareInfo(latest_version="21.0.0.30", release_summary=None, release_url=None)
 
@@ -967,7 +1046,7 @@ async def test_async_get_firmware_info_raises_on_no_response():
     client = make_client()
     wire = make_wire_mock(get_device_update_check=None)
     with (
-        patch.object(client, "_get_wire", AsyncMock(return_value=wire)),
+        patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)),
         pytest.raises(sc.APIConnectionError),
     ):
         await client.async_get_firmware_info()
@@ -994,8 +1073,8 @@ async def test_async_start_stop_streaming_delegates_to_session_and_proxy():
     with (
         patch.object(client.rtsp_session, "start", AsyncMock()) as session_start,
         patch.object(client.rtsp_session, "stop", AsyncMock()) as session_stop,
-        patch.object(client._rtsp_proxy, "start", AsyncMock()) as proxy_start,
-        patch.object(client._rtsp_proxy, "stop", AsyncMock()) as proxy_stop,
+        patch.object(client._GwellIPCamClient__rtsp_proxy, "start", AsyncMock()) as proxy_start,
+        patch.object(client._GwellIPCamClient__rtsp_proxy, "stop", AsyncMock()) as proxy_stop,
     ):
         await client.async_start_streaming()
         await client.async_stop_streaming()
@@ -1009,16 +1088,37 @@ async def test_async_start_stop_streaming_delegates_to_session_and_proxy():
 async def test_async_close_wire_closes_and_clears_an_open_session():
     client = make_client()
     session = MagicMock()
-    client._wire = session
+    client._GwellIPCamClient__wire = session
     await client.async_close_wire()
     session.close.assert_called_once()
-    assert client._wire is None
+    assert client._GwellIPCamClient__wire is None
 
 
 @pytest.mark.asyncio
 async def test_async_close_wire_is_a_no_op_when_never_connected():
     client = make_client()
     await client.async_close_wire()  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_get_wire_closes_the_socket_when_binding_fails():
+    """A failed bind/connect must not leak the raw socket; it should be closed before APIConnectionError propagates."""
+
+    class _FakeHassResolvingHost:
+        async def async_add_executor_job(self, fn, *args: str):
+            return fn(*args)
+
+    client = sc.GwellIPCamClient(  # ty: ignore[invalid-argument-type]
+        hass=_FakeHassResolvingHost(), host="192.0.2.10", port=51880, password_hash="888888", entry_id="e"
+    )
+    fake_sock = MagicMock()
+    fake_sock.bind.side_effect = OSError("address already in use")
+    with (
+        patch("custom_components.gwell_ipcam.api.socket.socket", return_value=fake_sock),
+        pytest.raises(sc.APIConnectionError),
+    ):
+        await client._GwellIPCamClient__get_wire()
+    assert fake_sock.close.called
 
 
 @pytest.mark.asyncio
@@ -1059,7 +1159,7 @@ async def test_async_get_identity_raises_auth_error_when_unauthenticated():
     wire = make_wire_mock(get_device_info=None)
     with (
         patch.object(sc.GwellIPCamClient, "async_discover_one", AsyncMock(return_value=camera)),
-        patch.object(client, "_get_wire", AsyncMock(return_value=wire)),
+        patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)),
         pytest.raises(sc.APIAuthError),
     ):
         await client.async_get_identity()
@@ -1074,7 +1174,7 @@ async def test_async_get_identity_builds_camera_identity():
     wire = make_wire_mock(get_device_info={"device_version": "21.0.0.30"})
     with (
         patch.object(sc.GwellIPCamClient, "async_discover_one", AsyncMock(return_value=camera)),
-        patch.object(client, "_get_wire", AsyncMock(return_value=wire)),
+        patch.object(client, "_GwellIPCamClient__get_wire", AsyncMock(return_value=wire)),
     ):
         identity = await client.async_get_identity()
     assert identity == sc.CameraIdentity(

@@ -11,12 +11,35 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PASSWORD, CONF_PORT
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.gwell_ipcam.api import APIAuthError, APIConnectionError, CameraIdentity, DiscoveredCamera
+from custom_components.gwell_ipcam.api import (
+    APIAuthError,
+    APIConnectionError,
+    APIError,
+    CameraIdentity,
+    DiscoveredCamera,
+)
 from custom_components.gwell_ipcam.const import CONF_CONTACT_ID, CONF_PASSWORD_HASH, DEFAULT_PORT, DOMAIN
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
+
+_IDENTITY = CameraIdentity(
+    contact_id="9999999", name="IPCam-9999999", model="Sricam/ieGeek IP Camera", firmware_version="21.0.0.30"
+)
+
+
+def _existing_entry(**data_overrides: object) -> MockConfigEntry:
+    data = {
+        CONF_HOST: "192.0.2.10",
+        CONF_PORT: 51880,
+        CONF_PASSWORD_HASH: "636734832",
+        CONF_CONTACT_ID: "9999999",
+        CONF_NAME: "IPCam-9999999",
+    }
+    data.update(data_overrides)
+    return MockConfigEntry(domain=DOMAIN, data=data, unique_id="9999999", title="IPCam-9999999")
 
 
 async def _resolve_progress(
@@ -165,6 +188,93 @@ async def test_dhcp_flow_aborts_when_camera_not_reachable(hass: HomeAssistant) -
         )
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "no_devices_found"
+
+
+async def test_manual_flow_unknown_error_from_check_connection(hass: HomeAssistant) -> None:
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"next_step_id": "manual"})
+
+    with patch(
+        "custom_components.gwell_ipcam.api.GwellIPCamClient.async_check_connection",
+        AsyncMock(side_effect=APIError("garbled reply")),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_HOST: "192.0.2.10", CONF_PORT: 51880, CONF_PASSWORD: "camtest12"},
+        )
+        result = await _resolve_progress(hass, result)
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "unknown"}
+    assert result["description_placeholders"] == {"error": "garbled reply"}
+
+
+async def test_integration_discovery_flow_creates_entry(hass: HomeAssistant) -> None:
+    discovery_info = {
+        CONF_HOST: "192.0.2.10",
+        CONF_PORT: DEFAULT_PORT,
+        CONF_CONTACT_ID: "9999999",
+        CONF_NAME: "IPCam-9999999",
+    }
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_INTEGRATION_DISCOVERY}, data=discovery_info
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "discover_password"
+
+    with patch(
+        "custom_components.gwell_ipcam.api.GwellIPCamClient.async_check_connection",
+        AsyncMock(return_value=_IDENTITY),
+    ):
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_PASSWORD: "camtest12"})
+        result = await _resolve_progress(hass, result)
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_HOST] == "192.0.2.10"
+    assert result["data"][CONF_CONTACT_ID] == "9999999"
+
+
+async def test_reconfigure_flow_updates_entry(hass: HomeAssistant) -> None:
+    entry = _existing_entry()
+    entry.add_to_hass(hass)
+
+    result = await entry.start_reconfigure_flow(hass)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reconfigure"
+
+    with patch(
+        "custom_components.gwell_ipcam.api.GwellIPCamClient.async_check_connection",
+        AsyncMock(return_value=_IDENTITY),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_HOST: "192.0.2.20", CONF_PORT: 51880, CONF_PASSWORD: ""},
+        )
+        result = await _resolve_progress(hass, result)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_HOST] == "192.0.2.20"
+
+
+async def test_reauth_flow_updates_password(hass: HomeAssistant) -> None:
+    entry = _existing_entry()
+    entry.add_to_hass(hass)
+
+    result = await entry.start_reauth_flow(hass)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reauth_confirm"
+
+    with patch(
+        "custom_components.gwell_ipcam.api.GwellIPCamClient.async_check_connection",
+        AsyncMock(return_value=_IDENTITY),
+    ):
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_PASSWORD: "camtest12"})
+        result = await _resolve_progress(hass, result)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    assert entry.data[CONF_PASSWORD_HASH] == "636734832"
 
 
 @pytest.fixture(autouse=True)

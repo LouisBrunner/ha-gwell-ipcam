@@ -13,6 +13,7 @@ from .rtsp import AUDIO_CHANNELS, VIDEO_CHANNELS, cancel_and_wait
 
 _CANCEL_TIMEOUT_S = 5.0
 _REQUEST_READ_TIMEOUT_S = 8.0
+_MAX_CONTENT_LENGTH = 262144
 
 if TYPE_CHECKING:
     from .rtsp import RTSPSession
@@ -23,8 +24,6 @@ _SESSION_ID = "gwell1"
 
 @dataclass
 class _Request:
-    """A parsed incoming RTSP request from a downstream client (e.g. ffmpeg/go2rtc)."""
-
     method: str
     url: str
     cseq: int
@@ -32,13 +31,7 @@ class _Request:
 
 
 async def _read_request(reader: asyncio.StreamReader, buf: bytearray, timeout_s: float | None) -> _Request | None:
-    """
-    Parse one request out of `buf` (refilled from `reader` as needed); leftover bytes stay in `buf`.
-
-    `timeout_s` only guards against a client that never finishes the initial handshake -- once PLAY has
-    started, a client legitimately sends nothing further until it tears down, so the caller passes `None`
-    (real EOF from `reader.read()` on disconnect is what ends the loop then, not an idle timeout).
-    """
+    """Parse one request out of `buf` (refilled from `reader` as needed); `timeout_s=None` once PLAY is active."""
     while True:
         idx = bytes(buf).find(b"\r\n\r\n")
         if idx == -1:
@@ -59,6 +52,9 @@ async def _read_request(reader: asyncio.StreamReader, buf: bytearray, timeout_s:
         LOGGER.debug("local RTSP proxy recv: %s %s %s", method, url, headers)
         WIRE_LOGGER.debug("local RTSP proxy recv: %s", text)
         content_length = int(headers.get("content-length", "0"))
+        if not 0 <= content_length <= _MAX_CONTENT_LENGTH:
+            msg = f"implausible Content-Length: {content_length}"
+            raise ValueError(msg)
         while len(buf) < header_end + content_length:
             chunk = await asyncio.wait_for(reader.read(4096), timeout=timeout_s)
             if not chunk:
@@ -90,8 +86,6 @@ async def _write_response(
 
 @dataclass
 class _ConnectionState:
-    """Per-downstream-connection state threaded through request handling."""
-
     subscribed_channels: set[int]
     forward_task: asyncio.Task[None] | None = None
 
@@ -106,7 +100,7 @@ class RTSPProxyServer:
 
     @property
     def port(self) -> int:
-        """The ephemeral local port this proxy is listening on."""
+        """The local port this proxy is listening on."""
         assert self._server is not None  # noqa: S101
         return self._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
 
@@ -119,8 +113,7 @@ class RTSPProxyServer:
         if self._server is not None:
             started = time.monotonic()
             self._server.close()
-            # close()/wait_closed() alone never touch already-accepted connections, only new ones.
-            # abort_clients() is synchronous (added in Python 3.13) -- it is not itself awaitable.
+            # abort_clients() (sync, 3.13+) is needed too: close()/wait_closed() alone spare already-accepted clients.
             self._server.abort_clients()
             LOGGER.debug("Aborted local RTSP proxy clients in %.3fs", time.monotonic() - started)
             with contextlib.suppress(TimeoutError):
@@ -131,7 +124,7 @@ class RTSPProxyServer:
     async def __handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             await self.__serve(reader, writer)
-        except (OSError, asyncio.IncompleteReadError, ValueError, TimeoutError):
+        except OSError, asyncio.IncompleteReadError, ValueError, TimeoutError:
             LOGGER.debug("local RTSP proxy client disconnected", exc_info=True)
         finally:
             writer.close()

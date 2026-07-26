@@ -19,14 +19,7 @@ EVENT_MOTION_DETECTED = f"{DOMAIN}_motion_detected"
 
 
 def async_handle_recordings_update(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -> None:
-    """
-    Diff the latest recordings list against known IDs and fire events for new ones.
-
-    A recording also has to be newer than `recordings_since`, not just unseen by ID: the camera's recordings
-    listing is fetched over an unreliable UDP exchange, so an early poll can genuinely undercount what's on the
-    SD card. Without this recency gate, a later poll that returns the full list would treat every older,
-    previously-missed recording as "new" and fire a motion event for all of them at once.
-    """
+    """Diff the latest recordings list against known IDs and fire events for new ones newer than `recordings_since`."""
     data = entry.runtime_data
     recordings: list[Recording] = data.recordings_coordinator.data or []
 
@@ -60,7 +53,6 @@ def async_handle_recordings_update(hass: HomeAssistant, entry: GwellIPCamConfigE
 
 
 def _device_id(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -> str | None:
-    """Look up the device registry ID for this camera's device entry."""
     registry = er.async_get(hass)
     entries = er.async_entries_for_config_entry(registry, entry.entry_id)
     return entries[0].device_id if entries else None

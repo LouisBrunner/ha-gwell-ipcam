@@ -37,7 +37,7 @@ async def async_setup_entry(
     entry: GwellIPCamConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the camera platform."""
+    """Set up the camera platform and register the `ptz` entity service."""
     async_add_entities(
         [
             GwellIPCamCamera(
@@ -57,10 +57,10 @@ class GwellIPCamCamera(GwellIPCamEntity[GwellIPCamCoordinator], Camera):
     _attr_supported_features = CameraEntityFeature.STREAM
 
     def __init__(self, coordinator: GwellIPCamCoordinator, identity: CameraIdentity) -> None:
-        """Initialize the camera."""
+        """Initialize the camera; `Camera.__init__` is called directly since cooperative `super()` doesn't reach it."""
         super().__init__(coordinator, identity)
         Camera.__init__(self)
-        self._identity = identity
+        self.__identity = identity
         self._attr_unique_id = f"{coordinator.config_entry.unique_id}_live"
 
     async def stream_source(self) -> str | None:
@@ -69,13 +69,13 @@ class GwellIPCamCamera(GwellIPCamEntity[GwellIPCamCoordinator], Camera):
 
     @property
     def brand(self) -> str | None:
-        """Return the camera manufacturer."""
+        """Return "Gwell" -- this integration only supports one camera brand."""
         return "Gwell"
 
     @property
     def model(self) -> str | None:
-        """Return the camera model."""
-        return self._identity.model
+        """Return a placeholder model name -- no wire field carries a real one (see api.py)."""
+        return self.__identity.model
 
     @property
     def is_recording(self) -> bool:
@@ -108,13 +108,13 @@ class GwellIPCamCamera(GwellIPCamEntity[GwellIPCamCoordinator], Camera):
         return bool(self.coordinator.data.settings.get(SETTING_MOTION_DETECT, 0))
 
     async def async_enable_motion_detection(self) -> None:
-        """Handle the `camera.enable_motion_detection` action."""
+        """Write `SETTING_MOTION_DETECT` and refresh the coordinator's cached settings from the confirmed value."""
         client = self.coordinator.config_entry.runtime_data.client
         fresh = await client.async_set_setting(SETTING_MOTION_DETECT, 1)
         self.coordinator.apply_fresh_settings(fresh)
 
     async def async_disable_motion_detection(self) -> None:
-        """Handle the `camera.disable_motion_detection` action."""
+        """Write `SETTING_MOTION_DETECT` and refresh the coordinator's cached settings from the confirmed value."""
         client = self.coordinator.config_entry.runtime_data.client
         fresh = await client.async_set_setting(SETTING_MOTION_DETECT, 0)
         self.coordinator.apply_fresh_settings(fresh)

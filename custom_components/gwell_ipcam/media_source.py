@@ -12,6 +12,7 @@ from homeassistant.components.media_source import (
     MediaSource,
     MediaSourceItem,
     PlayMedia,
+    Unresolvable,
 )
 
 from .const import DOMAIN
@@ -58,7 +59,7 @@ def media_source_identifier(entry: GwellIPCamConfigEntry, recording_id: str) -> 
 
 
 async def async_get_media_source(hass: HomeAssistant) -> MediaSource:
-    """Set up the Gwell IP Camera media source."""
+    """Register the recording-stream HTTP view and return the media source."""
     hass.http.register_view(RecordingStreamView())
     return GwellIPCamMediaSource(hass)
 
@@ -69,13 +70,17 @@ class GwellIPCamMediaSource(MediaSource):
     name = "Gwell IP Camera"
 
     def __init__(self, hass: HomeAssistant) -> None:
-        """Initialize the media source."""
+        """Initialize, stashing `hass` since the `MediaSource` base class doesn't keep a reference to it."""
         super().__init__(DOMAIN)
         self.hass = hass
 
     async def async_resolve_media(self, item: MediaSourceItem) -> PlayMedia:
         """Resolve a recording identifier to a playable stream URL."""
-        entry_id, recording_id = item.identifier.split("/", 1)
+        parts = item.identifier.split("/", 1)
+        if len(parts) != 2:  # noqa: PLR2004
+            msg = f"Malformed media identifier: {item.identifier!r}"
+            raise Unresolvable(msg)
+        entry_id, recording_id = parts
         return PlayMedia(
             url=STREAM_URL_FORMAT.format(entry_id=entry_id, recording_id=recording_id),
             mime_type="video/mp4",
@@ -114,7 +119,7 @@ class RecordingStreamView(HomeAssistantView):
     requires_auth = True
 
     async def get(self, request: web.Request, entry_id: str, recording_id: str) -> web.StreamResponse:
-        """Stream a recording's contents."""
+        """Return 404 if `entry_id` is unknown, else stream the response body chunk by chunk."""
         hass: HomeAssistant = request.app["hass"]
         entry = hass.config_entries.async_get_entry(entry_id)
         if entry is None:

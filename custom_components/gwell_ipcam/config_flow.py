@@ -68,12 +68,12 @@ def _manual_schema(
 
 
 class GwellIPCamFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
-    """Config flow for Gwell IP cameras."""
+    """Handles discovery (broadcast/DHCP), manual entry, reconfigure, and reauth for Gwell IP cameras."""
 
     VERSION = 1
 
     def __init__(self) -> None:
-        """Initialize the flow."""
+        """Initialize per-flow-instance state, shared across whichever connect step ends up running."""
         self.__discovered: dict[str, DiscoveredCamera] = {}
         self.__chosen: DiscoveredCamera | None = None
         self.__discover_task: asyncio.Task[list[DiscoveredCamera]] | None = None
@@ -266,7 +266,7 @@ class GwellIPCamFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         return await self.async_step_discover_password(user_input)
 
     async def async_step_manual(self, user_input: dict | None = None) -> config_entries.ConfigFlowResult:
-        """Handle manual host/port/password entry."""
+        """Prompt for host/port/password and verify the connection before creating the entry."""
 
         def start(user_input: dict) -> tuple[str, int, str]:
             self.__connect_host = user_input[CONF_HOST]
@@ -317,6 +317,7 @@ class GwellIPCamFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         async def finish(identity: CameraIdentity) -> config_entries.ConfigFlowResult:
             assert self.__connect_host is not None  # noqa: S101
             assert self.__connect_port is not None  # noqa: S101
+            await self.async_set_unique_id(identity.contact_id)
             self._abort_if_unique_id_mismatch()
             # identity.name is a synthesized placeholder; keep the user's existing title
             return self.async_update_reload_and_abort(
@@ -423,10 +424,7 @@ class GwellIPCamFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class _FlowError(Exception):
-    """Internal signal carrying the translation key and detail message of a failed step."""
-
     def __init__(self, reason: str, message: str) -> None:
-        """Initialize with the translation key and human-readable detail."""
         super().__init__(reason)
         self.reason = reason
         self.message = message

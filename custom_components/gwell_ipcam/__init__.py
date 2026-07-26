@@ -65,7 +65,7 @@ async def async_setup(hass: HomeAssistant, _config: ConfigType) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -> bool:
-    """Set up a Gwell IP camera from a config entry."""
+    """Set up a camera, mapping auth/connection/other API errors to the matching ConfigEntry exception."""
     client = GwellIPCamClient(
         hass=hass,
         host=entry.data[CONF_HOST],
@@ -115,10 +115,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -> bool:
-    """Handle removal of an entry."""
+    """Unload all of this entry's platforms; unloading itself (streaming, listeners) is via `async_on_unload`."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -> None:
-    """Reload config entry."""
+    """Reload the entry; registered as its update listener, so an options/data change triggers this."""
     await hass.config_entries.async_reload(entry.entry_id)

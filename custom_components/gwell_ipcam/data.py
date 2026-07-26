@@ -19,7 +19,7 @@ type GwellIPCamConfigEntry = ConfigEntry[GwellIPCamData]
 
 @dataclass
 class GwellIPCamData:
-    """Runtime data for a configured camera."""
+    """Stored on `ConfigEntry.runtime_data`; general state and recordings are polled by separate coordinators."""
 
     client: GwellIPCamClient
     identity: CameraIdentity
