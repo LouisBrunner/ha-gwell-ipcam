@@ -17,6 +17,7 @@ from .entity import GwellIPCamEntity
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.entity_platform import AddEntitiesCallback
+    from homeassistant.helpers.typing import VolDictType
 
     from .api import CameraIdentity
     from .data import GwellIPCamConfigEntry
@@ -29,7 +30,7 @@ _PTZ_MOVE_SCHEMA = vol.Schema(
         vol.Optional("step_delay_ms", default=200): vol.All(vol.Coerce(int), vol.Range(min=0, max=2000)),
     }
 )
-_SERVICE_PTZ_SCHEMA = {vol.Required("moves"): vol.All(cv.ensure_list, [_PTZ_MOVE_SCHEMA])}
+_SERVICE_PTZ_SCHEMA: VolDictType = {vol.Required("moves"): vol.All(cv.ensure_list, [_PTZ_MOVE_SCHEMA])}
 
 
 async def async_setup_entry(

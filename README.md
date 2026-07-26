@@ -31,7 +31,7 @@ The following features cannot currently be implemented without a cloud relay (i.
 
 - Recordings playback: browsable in the media library, but cannot actually playback any stream
 - Firmware upgrade: current version is requestable and upgrade can be listed if the camera can contact the real cloud servers, no actual upgrade is performed however
-- Motion notifications: sent from the camera to the cloud, which relays them to a mobile app, currently emulated by the motion detection event entity using the recordings list (which is only available after the motion is finished)
+- Motion notifications: sent from the camera to the cloud, which relays to a mobile app; emulated here via the motion event entity, from the recordings list (once the recording finishes)
 
 ## Development
 

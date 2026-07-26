@@ -37,6 +37,9 @@ async def async_setup_entry(
     )
 
 
+_TAG_SUMMARIES = {"A": "Motion recording", "M": "Manual recording", "S": "Scheduled recording"}
+
+
 def _to_event(entry: GwellIPCamConfigEntry, source_entity_id: str, recording: Recording) -> CalendarEvent:
     media_content_id = media_source_identifier(entry, recording.recording_id)
     description = (
@@ -48,7 +51,7 @@ def _to_event(entry: GwellIPCamConfigEntry, source_entity_id: str, recording: Re
     return CalendarEvent(
         start=recording.started_at,
         end=recording.started_at + recording.duration,
-        summary="Motion recording" if recording.motion_triggered else "Manual recording",
+        summary=_TAG_SUMMARIES.get(recording.tag, "Recording"),
         description=description,
         uid=recording.recording_id,
     )

@@ -52,7 +52,7 @@ for the whole field rather than per byte.
 
 Every request/response on port `51880` shares a 12-byte header:
 
-```
+```text
  0        1        2        3        4                 8                 12
 +--------+--------+--------+--------+--------+--------+--------+--------+
 | 0x60   | subcmd |  dst   |  src   |          msgid (u32 LE)           |
@@ -88,7 +88,7 @@ typically arrives first, followed shortly by the real data response
 
 The generic ack is a fixed 6-byte shape, not the 12-byte header:
 
-```
+```text
  0        1        2        3        4        5
 +--------+--------+--------+--------+--------+--------+
 | 0x61   | subcmd | 0x6d   | 0x42   |   msgid (u16 LE) |
@@ -112,7 +112,7 @@ request.
 Every write, and most reads, embed an 8-byte DES-ECB block as the first
 8 bytes of the payload:
 
-```
+```text
 password_block = DES(key).decrypt(pack('<II', password_int, random_nonce))
 ```
 
@@ -156,7 +156,7 @@ sequenceDiagram
 
 Request payload, following the 8-byte password block:
 
-```
+```text
  0                 4
 +--------+--------+--------+--------+
 |         0x00000000                |
@@ -168,7 +168,7 @@ request; their meaning (if any beyond a fixed marker) is not known.
 
 Response payload:
 
-```
+```text
  0        1        2                 4
 +--------+--------+--------+--------+--------+ ...
 | 0x02   | 0x01   |      count       | (settingType, value) pairs ...
@@ -193,7 +193,7 @@ sequenceDiagram
 
 Request payload, following the 8-byte password block:
 
-```
+```text
  0                 4        4        8        8       12
 +--------+--------+--------+--------+--------+--------+--------+--------+
 |         0x00010001                |     settingType   |      value    |
@@ -225,7 +225,7 @@ seconds (observed 6-10s) after this response.
 |   5 | Record schedule (`record_plan_time`)   | daily start/end time for Record Mode `Timing`, see [Record plan time encoding](#record-plan-time-encoding)                                                                                                                                                  |
 |   8 | Video Standard (`video_format`)        | 0=NTSC, 1=PAL                                                                                                                                                                                                                                               |
 |  11 | Record Time                            | 0/1/2 — wire is 0-indexed, UI shows 1/2/3 min                                                                                                                                                                                                               |
-|  13 | Network Type (`net_type`)              | 0=Wired, 1=WiFi                                                                                                                                                                                                                                             |
+|  13 | Network Type (`net_type`)              | 0=Wired, 1=Wi-Fi                                                                                                                                                                                                                                            |
 |  14 | Volume                                 | 0-9, 9=max                                                                                                                                                                                                                                                  |
 |  20 | Timezone                               | see [Timezone encoding](#timezone-encoding)                                                                                                                                                                                                                 |
 |  24 | Image Reverse (`image_flip`)           | 0=mounted upside down, 1=normal. The camera does NOT auto-adjust PTZ pan/tilt direction for this — raw PTZ commands (see [RTSP](#rtsp-videoaudio-streaming-ptz-push-to-talk)) always move the motor the same physical direction regardless of this setting. |
@@ -240,34 +240,34 @@ plain UTC order (a handful of half-hour zones are spliced in at fixed
 points). There is no formula, just this lookup:
 
 | Wheel position | Wire value | UTC offset |
-| --: | --: | --: |
-|  0 |  0 | -11:00 |
-|  1 |  1 | -10:00 |
-|  2 |  2 |  -9:00 |
-|  3 |  3 |  -8:00 |
-|  4 |  4 |  -7:00 |
-|  5 |  5 |  -6:00 |
-|  6 |  6 |  -5:00 |
-|  7 |  7 |  -4:00 |
-|  8 | 29 |  -3:30 |
-|  9 |  8 |  -3:00 |
-| 10 |  9 |  -2:00 |
-| 11 | 10 |  -1:00 |
-| 12 | 11 |  +0:00 |
-| 13 | 12 |  +1:00 |
-| 14 | 13 |  +2:00 |
-| 15 | 14 |  +3:00 |
-| 16 | 25 |  +3:30 |
-| 17 | 15 |  +4:00 |
-| 18 | 26 |  +4:30 |
-| 19 | 16 |  +5:00 |
-| 20 | 24 |  +5:30 |
-| 21 | 17 |  +6:00 |
-| 22 | 27 |  +6:30 |
-| 23 | 18 |  +7:00 |
-| 24 | 19 |  +8:00 |
-| 25 | 20 |  +9:00 |
-| 26 | 28 |  +9:30 |
+| -: | -: | -: |
+| 0 | 0 | -11:00 |
+| 1 | 1 | -10:00 |
+| 2 | 2 | -9:00 |
+| 3 | 3 | -8:00 |
+| 4 | 4 | -7:00 |
+| 5 | 5 | -6:00 |
+| 6 | 6 | -5:00 |
+| 7 | 7 | -4:00 |
+| 8 | 29 | -3:30 |
+| 9 | 8 | -3:00 |
+| 10 | 9 | -2:00 |
+| 11 | 10 | -1:00 |
+| 12 | 11 | +0:00 |
+| 13 | 12 | +1:00 |
+| 14 | 13 | +2:00 |
+| 15 | 14 | +3:00 |
+| 16 | 25 | +3:30 |
+| 17 | 15 | +4:00 |
+| 18 | 26 | +4:30 |
+| 19 | 16 | +5:00 |
+| 20 | 24 | +5:30 |
+| 21 | 17 | +6:00 |
+| 22 | 27 | +6:30 |
+| 23 | 18 | +7:00 |
+| 24 | 19 | +8:00 |
+| 25 | 20 | +9:00 |
+| 26 | 28 | +9:30 |
 | 27 | 21 | +10:00 |
 | 28 | 22 | +11:00 |
 | 29 | 23 | +12:00 |
@@ -279,7 +279,7 @@ window into the same u32 value every other settingType uses — it is not a
 per-day-of-week bitmask, just one time-of-day range applied every day while
 Record Mode is `Timing`:
 
-```
+```text
  0                 1                 2                 3
 +-----------------+-----------------+-----------------+-----------------+
 | end_minute      | start_minute    | end_hour        | start_hour      |
@@ -303,7 +303,7 @@ Byte offsets quoted in the table and diagrams below (e.g. "offset 2",
 "offsets 8/16") are relative to the start of the response payload, i.e.
 the response tag byte itself is offset 0.
 
-```
+```text
 +--------+--------+------------------+
 | 0x60   | subcmd | dst | src | msgid | (12-byte header; subcmd is 0x0B for
 +--------+--------+------------------+  all of these except device info and
@@ -313,24 +313,24 @@ the response tag byte itself is offset 0.
 +--------+
 ```
 
-| Feature                           | Request tag | Response tag   | Notes                                                                                                                                                         |
-| --------------------------------- | ----------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Record Quality — read             | `0xF0`      | `0xF1`         | value at response offset 2, range 0-4                                                                                                                         |
-| Record Quality — write            | `0xEF`      | `0xF1` (async) | **different tag from read**                                                                                                                                   |
-| SD card capacity                  | `0x50`      | `0x50`         | total/free (u32 LE, ×16 = MB) at offsets 8/16; `SDcardID` (needed for format) at offset 4                                                                     |
-| Format SD card                    | `0x51`      | `0x51`         | destructive; `sd_id` = the `SDcardID` byte from the capacity response; result code at response offset 1 (80=success, 81=fail, 82=no_sd, 103=must_stop_record) |
-| Device time — read                | `0x0A`      | `0x0C`         | year(u16 LE)/month/day/hour/minute                                                                                                                            |
-| Device time — write               | `0x0B`      | `0x0C` (async) | same field layout as read response                                                                                                                            |
-| Device info                       | `0x27`      | `0x28`         | version/uboot/cpu/system, see below; **subcmd `0x03`, not `0x0B`**                                                                                             |
-| Firmware update check             | `0x1D`      | `0x1E`         | see below for how to read the result; **subcmd `0x03`, not `0x0B`**                                                                                            |
-| WiFi scan                         | `0x10`      | (variable)     | SSID list + signal-strength array                                                                                                                             |
-| Notification account list — read  | `0x16`      | `0x18`         | list of account IDs                                                                                                                                           |
-| Notification account list — write | `0x17`      | `0x18` (async) | there is no wire representation for a zero-length list; sending a single entry with value `0` is how the list is cleared                                      |
-| Network config write              | `0x68`      | —              | see below                                                                                                                                                     |
+| Feature | Request tag | Response tag | Notes |
+| - | - | - | - |
+| Record Quality — read | `0xF0` | `0xF1` | value at response offset 2, range 0-4 |
+| Record Quality — write | `0xEF` | `0xF1` (async) | **different tag from read** |
+| SD card capacity | `0x50` | `0x50` | total/free (u32 LE, ×16 = MB) at offsets 8/16; `SDcardID` (needed for format) at offset 4 |
+| Format SD card | `0x51` | `0x51` | destructive; `sd_id` = the `SDcardID` byte from the capacity response; result code at response offset 1 (80=success, 81=fail, 82=no_sd, 103=must_stop_record) |
+| Device time — read | `0x0A` | `0x0C` | year(u16 LE)/month/day/hour/minute |
+| Device time — write | `0x0B` | `0x0C` (async) | same field layout as read response |
+| Device info | `0x27` | `0x28` | version/uboot/cpu/system, see below; **subcmd `0x03`, not `0x0B`** |
+| Firmware update check | `0x1D` | `0x1E` | see below for how to read the result; **subcmd `0x03`, not `0x0B`** |
+| Wi-Fi scan | `0x10` | (variable) | SSID list + signal-strength array |
+| Notification account list — read | `0x16` | `0x18` | list of account IDs |
+| Notification account list — write | `0x17` | `0x18` (async) | there is no wire representation for a zero-length list; sending a single entry with value `0` is how the list is cleared |
+| Network config write | `0x68` | — | see below |
 
 ### Device info response
 
-```
+```text
  0        1        2        3        4        5        6        7        8        9       10       11
 +--------+--------+--------+--------+--------+--------+--------+--------+--------+--------+--------+--------+
 | 0x28   | result | pad    | pad    |           version (4 bytes,             |           uboot (4 bytes,     |
@@ -346,7 +346,7 @@ Each 4-byte version field is read in **reverse** byte order —
 
 ### Firmware update check response
 
-```
+```text
  0        1        2        3        4                                   8                                  12
 +--------+--------+--------+--------+--------+--------+--------+--------+--------+--------+--------+--------+
 | 0x1E   | result | pad    | pad    |     cur_version (4 bytes, reverse    |     upg_version (4 bytes, reverse
@@ -363,7 +363,7 @@ outside `{1, 72}` as "no update" rather than assuming it's exhaustive.
 
 ### Network config write
 
-```
+```text
  0        1        2        3        4              8              12             16             20
 +--------+--------+--------+--------+--------+--------+--------+--------+--------+--------+--------+--------+
 | 0x68   | 0x01   | 0x00   | mode   |     ip (4 bytes,        |     subnet (4 bytes,   |     gateway (4 bytes,
@@ -415,7 +415,7 @@ sequenceDiagram
 
 Each entry is 8 bytes:
 
-```
+```text
  0                 2        3        4        5        6        7
 +--------+--------+--------+--------+--------+--------+--------+--------+
 |   year (u16 LE)  | disc<<4|  day   |  hour  | minute | second |  tag   |
@@ -423,9 +423,10 @@ Each entry is 8 bytes:
 +--------+--------+--------+--------+--------+--------+--------+--------+
 ```
 
-`tag` is `'A'` (alarm-triggered) or `'M'` (manual). If the response's
-`flags` byte has bit 0 set, a parallel array of `u16 LE` durations
-(seconds), one per entry, follows the entry list.
+`tag` is `'A'` (alarm-triggered), `'M'` (manual), or `'S'` (scheduled, i.e.
+Record Mode `Timing`). If the response's `flags` byte has bit 0 set, a
+parallel array of `u16 LE` durations (seconds), one per entry, follows the
+entry list.
 
 ## RTSP (video/audio streaming, PTZ, push-to-talk)
 

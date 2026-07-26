@@ -79,14 +79,14 @@ _MAX_CONTENT_LENGTH = 262144
 
 
 def _parse_content_length(header_text: str) -> int:
-    """Return the body length, or 0 if absent; raises rather than treating an unparseable/implausible header as 0."""
+    """Return the body length, or 0 if absent; raises rather than treating an unparsable/implausible header as 0."""
     for line in header_text.split("\r\n")[1:]:
         key, sep, value = line.partition(":")
         if sep and key.strip().lower() == "content-length":
             try:
                 length = int(value.strip())
             except ValueError as exception:
-                msg = f"unparseable Content-Length: {value!r}"
+                msg = f"unparsable Content-Length: {value!r}"
                 raise RTSPError(msg) from exception
             if not 0 <= length <= _MAX_CONTENT_LENGTH:
                 msg = f"implausible Content-Length: {length}"
@@ -99,7 +99,7 @@ def _parse_cseq(value: str) -> int:
     try:
         return int(value)
     except ValueError as exception:
-        msg = f"unparseable CSeq: {value!r}"
+        msg = f"unparsable CSeq: {value!r}"
         raise RTSPError(msg) from exception
 
 

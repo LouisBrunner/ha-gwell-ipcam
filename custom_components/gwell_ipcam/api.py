@@ -167,7 +167,7 @@ class Recording:
     recording_id: str
     started_at: datetime
     duration: timedelta
-    motion_triggered: bool
+    tag: str  # raw wire tag: "A"=alarm, "M"=manual, "S"=scheduled/Timing, or another value not yet seen
 
 
 @dataclass(frozen=True)
@@ -322,6 +322,7 @@ class _BroadcastSlot[T]:
     def publish(self, value: T) -> None:
         self.latest = value
         self.seq += 1
+        self._exc = None
         event = self._updated
         self._updated = asyncio.Event()
         event.set()
@@ -1100,5 +1101,5 @@ def _to_recording(entry: _RecFileEntry) -> Recording:
         recording_id=f"{entry.disc}-{entry.timestamp:%Y%m%d%H%M%S}",
         started_at=entry.timestamp.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE),
         duration=timedelta(seconds=entry.duration_s or 0),
-        motion_triggered=entry.tag == "A",
+        tag=entry.tag,
     )

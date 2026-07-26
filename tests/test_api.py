@@ -346,6 +346,20 @@ async def test_broadcast_slot_after_seq_returns_a_publish_newer_than_since_seq()
     assert result == (2, "fresh")
 
 
+@pytest.mark.asyncio
+async def test_broadcast_slot_a_fresh_publish_clears_a_previous_failure():
+    """A one-off connection error (e.g. a camera reboot) must not permanently poison the slot."""
+    slot = sc._BroadcastSlot()
+    slot.fail(OSError("connection refused"))
+    with pytest.raises(OSError, match="connection refused"):
+        await slot.wait_after(0, timeout_s=0.01)
+
+    slot.publish("recovered")
+    result = await slot.wait_after(0, timeout_s=0.01)
+
+    assert result == (1, "recovered")
+
+
 # -- discovery -----------------------------------------------------------------
 
 
@@ -722,7 +736,7 @@ def test_to_recording_maps_fields():
         recording_id="0-20260713081548",
         started_at=datetime(2026, 7, 13, 8, 15, 48, tzinfo=sc.dt_util.DEFAULT_TIME_ZONE),
         duration=timedelta(seconds=120),
-        motion_triggered=True,
+        tag="A",
     )
 
 
@@ -732,8 +746,14 @@ def test_to_recording_missing_duration_defaults_to_zero():
         recording_id="1-20260713081548",
         started_at=datetime(2026, 7, 13, 8, 15, 48, tzinfo=sc.dt_util.DEFAULT_TIME_ZONE),
         duration=timedelta(0),
-        motion_triggered=False,
+        tag="M",
     )
+
+
+def test_to_recording_maps_a_scheduled_recording():
+    """Record Mode `Timing` recordings use their own tag, distinct from both alarm and manual."""
+    entry = sc._RecFileEntry(timestamp=datetime(2026, 7, 13, 8, 15, 48), disc=1, tag="S", duration_s=1800)
+    assert sc._to_recording(entry).tag == "S"
 
 
 # -- GwellIPCamClient: quick record ---------------------------------------------

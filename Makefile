@@ -57,7 +57,8 @@ endif
 vet:
 	uv run ruff check
 	uv run ruff format --diff
-	uv run ty check
+	# tests/ needs the `test` group, which conflicts with `hass` (see pyproject.toml) -- not type-checked here.
+	uv run ty check custom_components
 .PHONY: vet
 
 vet-toml:

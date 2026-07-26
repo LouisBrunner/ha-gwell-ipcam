@@ -17,8 +17,8 @@ def test_parse_content_length_accepts_a_valid_value():
     assert sc._parse_content_length("RTSP/1.0 200 OK\r\nContent-Length: 42") == 42
 
 
-def test_parse_content_length_rejects_an_unparseable_value():
-    with pytest.raises(sc.RTSPError, match="unparseable"):
+def test_parse_content_length_rejects_an_unparsable_value():
+    with pytest.raises(sc.RTSPError, match="unparsable"):
         sc._parse_content_length("RTSP/1.0 200 OK\r\nContent-Length: not-a-number")
 
 
@@ -44,9 +44,9 @@ def test_parse_cseq_accepts_a_valid_value():
     assert sc._parse_cseq("42") == 42
 
 
-def test_parse_cseq_rejects_an_unparseable_value():
+def test_parse_cseq_rejects_an_unparsable_value():
     """A malformed CSeq used to raise a bare ValueError that killed the reconnect supervisor permanently."""
-    with pytest.raises(sc.RTSPError, match="unparseable"):
+    with pytest.raises(sc.RTSPError, match="unparsable"):
         sc._parse_cseq("not-a-number")
 
 

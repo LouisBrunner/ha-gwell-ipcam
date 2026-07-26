@@ -88,6 +88,8 @@ class GwellIPCamButton(GwellIPCamDescribedEntity[GwellIPCamCoordinator, ButtonEn
 
     def _tag_quick_record_side_effects(self) -> None:
         """Attribute switch.record/select.record_mode's next state write to this button press in the logbook."""
+        if self._context is None:
+            return
         record_unique_id = f"{self.coordinator.config_entry.unique_id}_record"
         record_type_unique_id = f"{self.coordinator.config_entry.unique_id}_record_type"
         for platform in async_get_platforms(self.hass, DOMAIN):

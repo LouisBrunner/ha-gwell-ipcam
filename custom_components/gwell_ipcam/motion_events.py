@@ -19,7 +19,7 @@ EVENT_MOTION_DETECTED = f"{DOMAIN}_motion_detected"
 
 
 def async_handle_recordings_update(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -> None:
-    """Diff the latest recordings list against known IDs and fire events for new ones newer than `recordings_since`."""
+    """Diff recordings against known IDs; fire events for new, alarm-triggered ones newer than `recordings_since`."""
     data = entry.runtime_data
     recordings: list[Recording] = data.recordings_coordinator.data or []
 
@@ -28,7 +28,8 @@ def async_handle_recordings_update(hass: HomeAssistant, entry: GwellIPCamConfigE
     unseen = [
         recording
         for recording in recordings
-        if recording.recording_id not in data.known_recording_ids
+        if recording.tag == "A"
+        and recording.recording_id not in data.known_recording_ids
         and (watermark is None or recording.started_at > watermark)
     ]
     data.known_recording_ids = new_ids

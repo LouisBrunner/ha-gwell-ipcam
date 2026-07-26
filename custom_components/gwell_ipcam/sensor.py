@@ -153,17 +153,17 @@ class GwellIPCamRecordingsSensor(GwellIPCamEntity[GwellIPCamRecordingsCoordinato
         return len(self.coordinator.data or [])
 
     @property
-    def extra_state_attributes(self) -> dict[str, str | int | float | bool]:
+    def extra_state_attributes(self) -> dict[str, str | int | float]:
         """Return the latest recording's details (readable on the device page) plus the full list as JSON."""
         recordings = self.coordinator.data or []
-        attributes: dict[str, str | int | float | bool] = {
+        attributes: dict[str, str | int | float] = {
             "recordings": json.dumps(
                 [
                     {
                         "recording_id": recording.recording_id,
                         "started_at": recording.started_at.isoformat(),
                         "duration_s": recording.duration.total_seconds(),
-                        "motion_triggered": recording.motion_triggered,
+                        "tag": recording.tag,
                     }
                     for recording in recordings
                 ]
@@ -175,6 +175,6 @@ class GwellIPCamRecordingsSensor(GwellIPCamEntity[GwellIPCamRecordingsCoordinato
                 "latest_recording_id": latest.recording_id,
                 "latest_started_at": latest.started_at.isoformat(),
                 "latest_duration_s": latest.duration.total_seconds(),
-                "latest_motion_triggered": latest.motion_triggered,
+                "latest_tag": latest.tag,
             }
         return attributes

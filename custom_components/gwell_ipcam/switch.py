@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
     from .data import GwellIPCamConfigEntry
 
-_RECORD_KEY = "record"  # special-cased: driven by async_set_recording_state, not a raw settingType write
+_RECORD_SLUG = "record"  # special-cased: driven by async_set_recording_state, not a raw settingType write
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -31,7 +31,7 @@ class GwellIPCamSwitchDescription(SwitchEntityDescription):
 
 
 SWITCH_DESCRIPTIONS: tuple[GwellIPCamSwitchDescription, ...] = (
-    GwellIPCamSwitchDescription(key=_RECORD_KEY, translation_key="record", icon="mdi:record-rec", setting_type=None),
+    GwellIPCamSwitchDescription(key=_RECORD_SLUG, translation_key="record", icon="mdi:record-rec", setting_type=None),
     GwellIPCamSwitchDescription(
         key="alarm", translation_key="alarm", setting_type=SETTING_REMOTE_DEFENCE, icon="mdi:alarm-light"
     ),
