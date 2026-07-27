@@ -654,7 +654,7 @@ async def test_get_rec_files_excludes_settings_dump_lookalikes():
     """With no other packet arriving, filtering the lookalike out leaves no real reply -- a bad read, not 0."""
     settings_lookalike = _reply(bytes([0x02, 0x01]) + bytes(200))
     wire = make_wire([settings_lookalike])
-    with pytest.raises(OSError, match="no complete reply"):
+    with pytest.raises(sc.APIConnectionError, match="no complete reply"):
         await wire.get_rec_files(datetime(2026, 7, 1), datetime(2026, 7, 14), "u", timeout_s=0.01)
 
 
@@ -665,14 +665,14 @@ async def test_get_rec_files_raises_on_truncated_reply():
     payload = bytes([4, 0, 0, 2]) + entry
     resp = _reply(payload)
     wire = make_wire([resp])
-    with pytest.raises(OSError, match="no complete reply"):
+    with pytest.raises(sc.APIConnectionError, match="no complete reply"):
         await wire.get_rec_files(datetime(2026, 7, 1), datetime(2026, 7, 14), "u", timeout_s=0.01)
 
 
 @pytest.mark.asyncio
 async def test_get_rec_files_raises_on_no_response():
     wire = make_wire()
-    with pytest.raises(OSError, match="no complete reply"):
+    with pytest.raises(sc.APIConnectionError, match="no complete reply"):
         await wire.get_rec_files(datetime(2026, 7, 1), datetime(2026, 7, 14), "u", timeout_s=0.01)
 
 
