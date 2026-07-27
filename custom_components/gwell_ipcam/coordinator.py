@@ -102,21 +102,26 @@ async def _fetch_or_keep_previous[T](
             raise
         streak = ctx.streaks.get(label, 0) + 1
         ctx.streaks[label] = streak
-        if streak > _MAX_FALLBACK_STREAK:
+        if streak == 1:
+            LOGGER.warning("[%s] %s failed, keeping the last known value while retrying", ctx.uid, label)
+        elif streak == _MAX_FALLBACK_STREAK + 1:
             LOGGER.warning(
                 "[%s] %s failed %d times in a row, no longer serving the stale value", ctx.uid, label, streak
             )
+        else:
+            LOGGER.debug(
+                "[%s] %s still failing after retries (%d/%d), keeping the last known value",
+                ctx.uid,
+                label,
+                streak,
+                _MAX_FALLBACK_STREAK,
+            )
+        if streak > _MAX_FALLBACK_STREAK:
             raise
-        LOGGER.warning(
-            "[%s] %s still failing after retries (%d/%d), keeping the last known value",
-            ctx.uid,
-            label,
-            streak,
-            _MAX_FALLBACK_STREAK,
-        )
         return fallback.value
     else:
-        ctx.streaks.pop(label, None)
+        if ctx.streaks.pop(label, None):
+            LOGGER.info("[%s] %s recovered", ctx.uid, label)
         return result
 
 

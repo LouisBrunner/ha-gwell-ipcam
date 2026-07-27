@@ -65,7 +65,9 @@ class GwellIPCamCamera(GwellIPCamEntity[GwellIPCamCoordinator], Camera):
         self._attr_unique_id = f"{coordinator.config_entry.unique_id}_live"
 
     async def stream_source(self) -> str | None:
-        """Return the live stream URL, or None if unavailable (see api.py)."""
+        """Return the live stream URL, or None while the upstream RTSP session is offline."""
+        if not self.is_streaming:
+            return None
         return await self.coordinator.config_entry.runtime_data.client.async_get_live_stream_url()
 
     @property
