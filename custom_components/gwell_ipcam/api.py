@@ -679,7 +679,7 @@ class _Wire:
         data = await self.__session.send_and_wait_rec_files(send, timeout_s)
         if data is None:
             msg = "get_rec_files: no complete reply from camera"
-            raise OSError(msg)
+            raise APIConnectionError(msg)
         try:
             return _decode_rec_files(data)
         except (struct.error, IndexError, ValueError) as err:
