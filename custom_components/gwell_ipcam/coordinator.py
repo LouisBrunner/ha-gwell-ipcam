@@ -27,6 +27,7 @@ from .const import CLOCK_DRIFT_THRESHOLD_S, LOGGER, RECORDINGS_POLL_INTERVAL_S, 
 _UPDATE_RETRIES = 2
 _DISCOVERY_PROBE_TIMEOUT_S = 2.0
 _MAX_FALLBACK_STREAK = 3
+_MIN_AUTH_FAILURE_STREAK = 3
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -54,7 +55,30 @@ async def _looks_like_auth_failure(probe: _Probe) -> bool:
     return found is not None
 
 
-async def _call_with_retry[T](probe: _Probe, uid: str, label: str, call: Callable[[], Awaitable[T]]) -> T:
+async def _confirm_auth_failure(uid: str, label: str, probe: _Probe, auth_streaks: dict[str, int] | None) -> bool:
+    """Whether `label` has now looked like a bad password for `_MIN_AUTH_FAILURE_STREAK` consecutive polls."""
+    if not await _looks_like_auth_failure(probe):
+        if auth_streaks is not None:
+            auth_streaks.pop(label, None)
+        return False
+    streak = (auth_streaks.get(label, 0) + 1) if auth_streaks is not None else _MIN_AUTH_FAILURE_STREAK
+    if auth_streaks is not None:
+        auth_streaks[label] = streak
+    if streak < _MIN_AUTH_FAILURE_STREAK:
+        LOGGER.debug(
+            "[%s] %s looks like a bad password (%d/%d), could still be a slow boot",
+            uid,
+            label,
+            streak,
+            _MIN_AUTH_FAILURE_STREAK,
+        )
+        return False
+    return True
+
+
+async def _call_with_retry[T](
+    probe: _Probe, uid: str, label: str, call: Callable[[], Awaitable[T]], auth_streaks: dict[str, int] | None = None
+) -> T:
     """Retry `call` on a transient connection drop; each call gets its own retries, not the whole batch."""
     for attempt in range(_UPDATE_RETRIES + 1):
         if probe.hass.is_stopping:
@@ -62,17 +86,21 @@ async def _call_with_retry[T](probe: _Probe, uid: str, label: str, call: Callabl
             msg = f"{label}: Home Assistant is shutting down"
             raise UpdateFailed(msg)
         try:
-            return await call()
+            result = await call()
         except APIAuthError as exception:
             raise ConfigEntryAuthFailed(exception) from exception
         except APIConnectionError as exception:
             if attempt == _UPDATE_RETRIES:
-                if await _looks_like_auth_failure(probe):
+                if await _confirm_auth_failure(uid, label, probe, auth_streaks):
                     raise ConfigEntryAuthFailed(exception) from exception
                 raise UpdateFailed(exception) from exception
             LOGGER.debug("[%s] %s attempt %s failed (%s), retrying", uid, label, attempt + 1, exception)
         except APIError as exception:
             raise UpdateFailed(exception) from exception
+        else:
+            if auth_streaks is not None:
+                auth_streaks.pop(label, None)
+            return result
     raise AssertionError
 
 
@@ -89,6 +117,7 @@ class _FetchContext:
     probe: _Probe
     uid: str
     streaks: dict[str, int]
+    auth_streaks: dict[str, int]
 
 
 async def _fetch_or_keep_previous[T](
@@ -96,7 +125,7 @@ async def _fetch_or_keep_previous[T](
 ) -> T:
     """Like `_call_with_retry`, but falls back to `fallback.value` up to `_MAX_FALLBACK_STREAK` times, not failing."""
     try:
-        result = await _call_with_retry(ctx.probe, ctx.uid, label, call)
+        result = await _call_with_retry(ctx.probe, ctx.uid, label, call, ctx.auth_streaks)
     except UpdateFailed:
         if not fallback.has_previous:
             raise
@@ -155,6 +184,7 @@ class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
             update_interval=timedelta(seconds=STATE_UPDATE_INTERVAL_S),
         )
         self.__fallback_streaks: dict[str, int] = {}
+        self.__auth_streaks: dict[str, int] = {}
 
     def apply_fresh_settings(self, settings: dict[int, int]) -> None:
         """Push a write's already-confirmed settings, bypassing a fresh poll that could race a stale value."""
@@ -201,7 +231,7 @@ class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
         probe = _Probe(self.hass, self.config_entry.data[CONF_HOST])
         previous = self.data
         uid = uuid.uuid4().hex[:8]
-        ctx = _FetchContext(probe, uid, self.__fallback_streaks)
+        ctx = _FetchContext(probe, uid, self.__fallback_streaks, self.__auth_streaks)
         started = time.monotonic()
         LOGGER.debug("[%s] Starting state check", uid)
         has_previous = previous is not None
@@ -232,7 +262,9 @@ class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
         if abs((dt_util.utcnow() - camera_time).total_seconds()) > CLOCK_DRIFT_THRESHOLD_S:
             LOGGER.info("[%s] Camera clock drifted from %s, syncing", uid, camera_time)
             try:
-                camera_time = await _call_with_retry(probe, uid, "sync_time", lambda: client.async_sync_time(uid=uid))
+                camera_time = await _call_with_retry(
+                    probe, uid, "sync_time", lambda: client.async_sync_time(uid=uid), ctx.auth_streaks
+                )
             except UpdateFailed as exception:
                 LOGGER.warning("[%s] Camera clock sync failed, keeping the drifted value: %s", uid, exception)
         LOGGER.debug("[%s] Finished state check in %.3fs", uid, time.monotonic() - started)
@@ -259,6 +291,7 @@ class GwellIPCamRecordingsCoordinator(DataUpdateCoordinator[list[Recording]]):
             update_interval=timedelta(seconds=RECORDINGS_POLL_INTERVAL_S),
         )
         self.__fallback_streaks: dict[str, int] = {}
+        self.__auth_streaks: dict[str, int] = {}
 
     async def _async_update_data(self) -> list[Recording]:
         """Fetch the current recordings list; keeps the last known list if still failing after retries."""
@@ -266,7 +299,7 @@ class GwellIPCamRecordingsCoordinator(DataUpdateCoordinator[list[Recording]]):
         probe = _Probe(self.hass, self.config_entry.data[CONF_HOST])
         previous = self.data
         uid = uuid.uuid4().hex[:8]
-        ctx = _FetchContext(probe, uid, self.__fallback_streaks)
+        ctx = _FetchContext(probe, uid, self.__fallback_streaks, self.__auth_streaks)
         started = time.monotonic()
         LOGGER.debug("[%s] Starting recordings check", uid)
         recordings = await _fetch_or_keep_previous(
