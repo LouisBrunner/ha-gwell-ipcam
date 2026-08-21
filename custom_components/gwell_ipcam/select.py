@@ -75,18 +75,21 @@ class GwellIPCamSelect(GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPC
     @property
     def current_option(self) -> str | None:
         """Map the raw settingType value through `value_to_option`."""
-        value = self.coordinator.data.settings.get(self.entity_description.setting_type)
-        return self.entity_description.value_to_option.get(value) if value is not None else None
+        if self.coordinator.data is None:
+            return None
+        desc = self.entity_description
+        value = self.coordinator.data.settings.get(desc.setting_type)
+        return desc.value_to_option.get(value) if value is not None else None
 
     async def async_select_option(self, option: str) -> None:
         """Reverse-map `option` through `value_to_option` and write the raw settingType value."""
         uid = uuid.uuid4().hex[:8]
         LOGGER.debug("[%s] User set %s to %s", uid, self.entity_id, option)
-        value_to_option = self.entity_description.value_to_option
-        value = next((v for v, o in value_to_option.items() if o == option), None)
+        desc = self.entity_description
+        value = next((v for v, o in desc.value_to_option.items() if o == option), None)
         if value is None:
             msg = f"{option!r} is not a valid option for {self.entity_id}"
             raise ValueError(msg)
         client = self.coordinator.config_entry.runtime_data.client
-        fresh = await client.async_set_setting(self.entity_description.setting_type, value, uid=uid)
+        fresh = await client.async_set_setting(desc.setting_type, value, uid=uid)
         self.coordinator.apply_fresh_settings(fresh)

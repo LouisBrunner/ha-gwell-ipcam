@@ -80,6 +80,8 @@ class GwellIPCamSwitch(GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPC
     @property
     def is_on(self) -> bool:
         """Return the setting's value, negated if `invert`, or the recording state for the special-cased key."""
+        if self.coordinator.data is None:
+            return False
         desc = self.entity_description
         if desc.setting_type is None:
             return self.coordinator.data.recording

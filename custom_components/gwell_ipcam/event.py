@@ -9,6 +9,7 @@ from homeassistant.core import callback
 
 from .coordinator import GwellIPCamCoordinator
 from .entity import GwellIPCamEntity
+from .media_source import stream_url
 from .motion_events import EVENT_MOTION_DETECTED
 
 if TYPE_CHECKING:
@@ -69,7 +70,9 @@ class GwellIPCamMotionEvent(GwellIPCamEntity[GwellIPCamCoordinator], EventEntity
             {
                 "recording_id": event.data["recording_id"],
                 "started_at": event.data["started_at"],
+                "duration_s": event.data["duration_s"],
                 "media_content_id": event.data["media_content_id"],
+                "stream_url": stream_url(self.coordinator.config_entry, event.data["recording_id"]),
             },
         )
         self.async_write_ha_state()

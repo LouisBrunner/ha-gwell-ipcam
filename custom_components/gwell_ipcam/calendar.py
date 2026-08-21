@@ -10,6 +10,7 @@ from homeassistant.util import dt as dt_util
 from .coordinator import GwellIPCamRecordingsCoordinator
 from .entity import GwellIPCamEntity
 from .media_source import media_source_identifier
+from .media_source import stream_url as build_stream_url
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -42,10 +43,12 @@ _TAG_SUMMARIES = {"A": "Motion recording", "M": "Manual recording", "S": "Schedu
 
 def _to_event(entry: GwellIPCamConfigEntry, source_entity_id: str, recording: Recording) -> CalendarEvent:
     media_content_id = media_source_identifier(entry, recording.recording_id)
+    stream_url = build_stream_url(entry, recording.recording_id)
     description = (
         f"Recording ID: {recording.recording_id}\n"
         f"Duration: {recording.duration}\n"
         f"Media: {media_content_id}\n"
+        f"Stream: {stream_url}\n"
         f"Source: {source_entity_id}"
     )
     return CalendarEvent(
@@ -87,4 +90,8 @@ class GwellIPCamCalendar(GwellIPCamEntity[GwellIPCamRecordingsCoordinator], Cale
         """Return recordings that fall within the requested range."""
         recordings = self.coordinator.data or []
         entry = self.coordinator.config_entry
-        return [_to_event(entry, self.entity_id, r) for r in recordings if start_date <= r.started_at <= end_date]
+        return [
+            _to_event(entry, self.entity_id, r)
+            for r in recordings
+            if r.started_at <= end_date and r.started_at + r.duration >= start_date
+        ]

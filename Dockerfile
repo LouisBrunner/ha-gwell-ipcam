@@ -1,5 +1,5 @@
 FROM ghcr.io/home-assistant/homeassistant-base:2026.07.0
-RUN apk add --no-cache make~4.4.1 curl~8.14.1
+RUN apk add --no-cache make~4.4.1 curl~8.20.0
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 ARG GO2RTC_VERSION=v1.9.14
 ARG TARGETARCH

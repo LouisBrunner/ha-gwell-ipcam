@@ -58,6 +58,11 @@ def media_source_identifier(entry: GwellIPCamConfigEntry, recording_id: str) -> 
     return f"media-source://{DOMAIN}/{entry.entry_id}/{recording_id}"
 
 
+def stream_url(entry: GwellIPCamConfigEntry, recording_id: str) -> str:
+    """Build the HTTP stream URL for a given camera's recording."""
+    return STREAM_URL_FORMAT.format(entry_id=entry.entry_id, recording_id=recording_id)
+
+
 async def async_get_media_source(hass: HomeAssistant) -> MediaSource:
     """Register the recording-stream HTTP view and return the media source."""
     hass.http.register_view(RecordingStreamView())

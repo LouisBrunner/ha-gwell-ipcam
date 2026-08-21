@@ -94,6 +94,8 @@ class GwellIPCamNumber(GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPC
     @property
     def native_value(self) -> float | None:
         """Return record quality if `setting_type` is None, else the raw settingType value."""
+        if self.coordinator.data is None:
+            return None
         if self.entity_description.setting_type is None:
             return self.coordinator.data.record_quality
         return self.coordinator.data.settings.get(self.entity_description.setting_type)

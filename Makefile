@@ -50,9 +50,17 @@ ifeq ($(INSIDE_DOCKER),1)
 	fi
 	UV_LINK_MODE=copy PYTHONPATH="$(PYTHONPATH):$(PWD)/custom_components" hass --config "$(PWD)/config" --debug
 else
-	hot -d custom_components docker compose exec -it devcontainer ash -c 'make dev'
+	hot -s -e __pycache__ -d custom_components -k "make dev-stop" docker compose exec -it devcontainer ash -c 'make dev'
 endif
 .PHONY: dev
+
+dev-stop:
+ifeq ($(INSIDE_DOCKER),1)
+	pkill -TERM -f 'hass --config' || true
+else
+	docker compose exec -T devcontainer make dev-stop
+endif
+.PHONY: dev-stop
 
 vet:
 	uv run ruff check

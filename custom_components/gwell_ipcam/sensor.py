@@ -17,6 +17,7 @@ from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfInformation
 from .api import SETTING_NET_TYPE
 from .coordinator import GwellIPCamCoordinator, GwellIPCamRecordingsCoordinator
 from .entity import GwellIPCamDescribedEntity, GwellIPCamEntity
+from .media_source import media_source_identifier, stream_url
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -123,12 +124,14 @@ class GwellIPCamSensor(GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPC
     @property
     def native_value(self) -> str | int | float | datetime | None:
         """Delegate to the description's `value_fn`."""
+        if self.coordinator.data is None:
+            return None
         return self.entity_description.value_fn(self.coordinator.data)
 
     @property
     def extra_state_attributes(self) -> dict[str, int] | None:
         """Delegate to the description's `extra_attributes_fn`, if it has one."""
-        if self.entity_description.extra_attributes_fn is None:
+        if self.entity_description.extra_attributes_fn is None or self.coordinator.data is None:
             return None
         return self.entity_description.extra_attributes_fn(self.coordinator.data)
 
@@ -155,6 +158,7 @@ class GwellIPCamRecordingsSensor(GwellIPCamEntity[GwellIPCamRecordingsCoordinato
     @property
     def extra_state_attributes(self) -> dict[str, str | int | float]:
         """Return the latest recording's details (readable on the device page) plus the full list as JSON."""
+        entry = self.coordinator.config_entry
         recordings = self.coordinator.data or []
         attributes: dict[str, str | int | float] = {
             "recordings": json.dumps(
@@ -164,6 +168,8 @@ class GwellIPCamRecordingsSensor(GwellIPCamEntity[GwellIPCamRecordingsCoordinato
                         "started_at": recording.started_at.isoformat(),
                         "duration_s": recording.duration.total_seconds(),
                         "tag": recording.tag,
+                        "media_content_id": media_source_identifier(entry, recording.recording_id),
+                        "stream_url": stream_url(entry, recording.recording_id),
                     }
                     for recording in recordings
                 ]
@@ -176,5 +182,7 @@ class GwellIPCamRecordingsSensor(GwellIPCamEntity[GwellIPCamRecordingsCoordinato
                 "latest_started_at": latest.started_at.isoformat(),
                 "latest_duration_s": latest.duration.total_seconds(),
                 "latest_tag": latest.tag,
+                "latest_media_content_id": media_source_identifier(entry, latest.recording_id),
+                "latest_stream_url": stream_url(entry, latest.recording_id),
             }
         return attributes

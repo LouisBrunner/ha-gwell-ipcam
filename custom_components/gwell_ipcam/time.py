@@ -8,6 +8,7 @@ from datetime import time as dtime
 from typing import TYPE_CHECKING, Literal
 
 from homeassistant.components.time import TimeEntity, TimeEntityDescription
+from homeassistant.exceptions import HomeAssistantError
 
 from .api import SETTING_RECORD_PLAN_TIME, decode_record_plan_time
 from .const import LOGGER
@@ -63,6 +64,8 @@ class GwellIPCamTime(GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPCam
     @property
     def native_value(self) -> dtime | None:
         """Return the current value, or None if unset or never configured on the camera."""
+        if self.coordinator.data is None:
+            return None
         value = self.coordinator.data.settings.get(SETTING_RECORD_PLAN_TIME)
         decoded = decode_record_plan_time(value) if value is not None else None
         if decoded is None:
@@ -74,6 +77,9 @@ class GwellIPCamTime(GwellIPCamDescribedEntity[GwellIPCamCoordinator, GwellIPCam
         """Write the value back to the camera; the other endpoint is sent unchanged."""
         uid = uuid.uuid4().hex[:8]
         LOGGER.debug("[%s] User set %s to %s", uid, self.entity_id, value)
+        if self.coordinator.data is None:
+            msg = f"{self.entity_id}: the current record plan isn't known yet, refusing to guess the other endpoint"
+            raise HomeAssistantError(msg)
         current = self.coordinator.data.settings.get(SETTING_RECORD_PLAN_TIME, 0)
         start, end = decode_record_plan_time(current) or (dtime(0, 0), dtime(0, 0))
         client = self.coordinator.config_entry.runtime_data.client

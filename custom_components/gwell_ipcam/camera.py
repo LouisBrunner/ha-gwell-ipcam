@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import voluptuous as vol
 from homeassistant.components.camera import Camera, CameraEntityFeature
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_platform
 
@@ -65,9 +66,7 @@ class GwellIPCamCamera(GwellIPCamEntity[GwellIPCamCoordinator], Camera):
         self._attr_unique_id = f"{coordinator.config_entry.unique_id}_live"
 
     async def stream_source(self) -> str | None:
-        """Return the live stream URL, or None while the upstream RTSP session is offline."""
-        if not self.is_streaming:
-            return None
+        """Return the local proxy's URL."""
         return await self.coordinator.config_entry.runtime_data.client.async_get_live_stream_url()
 
     @property
@@ -83,6 +82,8 @@ class GwellIPCamCamera(GwellIPCamEntity[GwellIPCamCoordinator], Camera):
     @property
     def is_recording(self) -> bool:
         """Mirror the `record` switch."""
+        if self.coordinator.data is None:
+            return False
         return self.coordinator.data.recording
 
     @property
@@ -108,6 +109,8 @@ class GwellIPCamCamera(GwellIPCamEntity[GwellIPCamCoordinator], Camera):
     @property
     def motion_detection_enabled(self) -> bool:
         """Mirror the `motion_detect` switch, for `camera.enable_motion_detection`/`disable_motion_detection`."""
+        if self.coordinator.data is None:
+            return False
         return bool(self.coordinator.data.settings.get(SETTING_MOTION_DETECT, 0))
 
     async def async_enable_motion_detection(self) -> None:
@@ -125,6 +128,9 @@ class GwellIPCamCamera(GwellIPCamEntity[GwellIPCamCoordinator], Camera):
     async def async_ptz(self, moves: list[dict]) -> None:
         """Run a sequence of PTZ moves, mapping each direction for the camera's image-flip setting."""
         LOGGER.debug("User called ptz service on %s with %s", self.entity_id, moves)
+        if self.coordinator.data is None:
+            msg = f"{self.entity_id} has never connected to the camera, its settings are not known yet"
+            raise HomeAssistantError(msg)
         client = self.coordinator.config_entry.runtime_data.client
         settings = self.coordinator.data.settings
         for move in moves:

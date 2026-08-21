@@ -5,15 +5,16 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from homeassistant.const import CONF_HOST, CONF_PORT, Platform
+from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT, Platform
 from homeassistant.core import callback
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError, ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .api import APIAuthError, APIConnectionError, APIError, GwellIPCamClient
-from .const import CONF_PASSWORD_HASH, DISCOVERY_INTERVAL_S, DOMAIN
+from .api import APIAuthError, APIConnectionError, APIError, CameraIdentity, GwellIPCamClient
+from .const import CONF_CONTACT_ID, CONF_PASSWORD_HASH, DISCOVERY_INTERVAL_S, DOMAIN, LOGGER
 from .coordinator import GwellIPCamCoordinator, GwellIPCamRecordingsCoordinator
 from .data import GwellIPCamData
 from .discovery import async_discover_and_trigger_flows
@@ -50,7 +51,7 @@ async def async_setup(hass: HomeAssistant, _config: ConfigType) -> bool:
     def _async_start_background_discovery(*_: object) -> None:
         hass.async_create_background_task(
             async_discover_and_trigger_flows(hass),
-            "gwell_ipcam-discovery",
+            f"{DOMAIN}-discovery",
             eager_start=True,
         )
 
@@ -75,12 +76,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -
     )
     await client.async_load_quick_record_state()
 
+    degraded = False
     try:
         identity = await client.async_get_identity()
     except APIAuthError as e:
         raise ConfigEntryAuthFailed(str(e)) from e
     except APIConnectionError as e:
-        raise ConfigEntryNotReady(str(e)) from e
+        degraded = True
+        LOGGER.warning("%s: camera unreachable at startup (%s), setting up in a degraded state", entry.title, e)
+        identity = CameraIdentity(
+            contact_id=entry.data[CONF_CONTACT_ID],
+            name=entry.data.get(CONF_NAME, entry.title),
+            model=None,
+            firmware_version=None,
+        )
     except APIError as e:
         raise ConfigEntryError(str(e)) from e
 
@@ -94,8 +103,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -
         recordings_coordinator=recordings_coordinator,
     )
 
-    await coordinator.async_config_entry_first_refresh()
-    await recordings_coordinator.async_config_entry_first_refresh()
+    if degraded:
+        coordinator.last_update_success = False
+        recordings_coordinator.last_update_success = False
+        await coordinator.async_refresh()
+        await recordings_coordinator.async_refresh()
+    else:
+        await coordinator.async_config_entry_first_refresh()
+        await recordings_coordinator.async_config_entry_first_refresh()
 
     # Seed the baseline before listening, or every recording already on the SD card looks "new" on this boot.
     boot_recordings = recordings_coordinator.data or []
@@ -122,3 +137,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: GwellIPCamConfigEntry) 
 async def async_reload_entry(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -> None:
     """Reload the entry; registered as its update listener, so an options/data change triggers this."""
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -> None:
+    """Delete this entry's persisted Store files -- unlike the config entry itself, they aren't auto-cleaned."""
+    await Store(hass, version=1, key=f"{DOMAIN}.{entry.entry_id}.quick_record").async_remove()
+    await Store(hass, version=1, key=f"{DOMAIN}.{entry.entry_id}.last_frame").async_remove()

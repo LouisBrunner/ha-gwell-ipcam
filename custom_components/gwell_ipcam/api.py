@@ -20,7 +20,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, modes
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .const import DEFAULT_PORT, LOGGER, RTSP_PATH, WIRE_LOGGER
+from .const import DEFAULT_PORT, DOMAIN, LOGGER, RTSP_PATH, WIRE_LOGGER
 from .rtsp import RTSPSession, TalkSession
 from .rtsp_proxy import RTSPProxyServer
 
@@ -156,8 +156,8 @@ class CameraIdentity:
 
     contact_id: str
     name: str
-    model: str
-    firmware_version: str
+    model: str | None
+    firmware_version: str | None
 
 
 @dataclass(frozen=True)
@@ -811,17 +811,18 @@ class GwellIPCamClient:
         self.__password_int = entry_password(password_hash)
         self.__entry_id = entry_id
         self.__rtsp_session = RTSPSession(host)
-        self.__rtsp_proxy = RTSPProxyServer(self.__rtsp_session)
+        self.__rtsp_proxy = RTSPProxyServer(self.__rtsp_session, hass=hass, entry_id=entry_id)
         self.__quick_record_store: Store[dict[str, int | None]] | None = None
         self.__quick_record_saved_type: int | None = None
         self.__quick_record_lock = asyncio.Lock()
         self.__wire: _WireSession | None = None
         self.__dst_id = 0
         self.__wire_connect_lock = asyncio.Lock()
+        self.__host_ip: str | None = None
 
     def __get_quick_record_store(self) -> Store[dict[str, int | None]]:
         if self.__quick_record_store is None:
-            self.__quick_record_store = Store(self.__hass, version=1, key=f"gwell_ipcam.{self.__entry_id}.quick_record")
+            self.__quick_record_store = Store(self.__hass, version=1, key=f"{DOMAIN}.{self.__entry_id}.quick_record")
         return self.__quick_record_store
 
     async def __get_wire(self) -> _Wire:
@@ -831,7 +832,9 @@ class GwellIPCamClient:
                     session = _WireSession(self.__host)
                     sock: socket.socket | None = None
                     try:
-                        host_ip = await self.__hass.async_add_executor_job(_resolve_ipv4, self.__host)
+                        if self.__host_ip is None:
+                            self.__host_ip = await self.__hass.async_add_executor_job(_resolve_ipv4, self.__host)
+                        host_ip = self.__host_ip
                         loop = asyncio.get_running_loop()
                         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -841,6 +844,7 @@ class GwellIPCamClient:
                     except OSError as err:
                         if sock is not None:
                             sock.close()
+                        self.__host_ip = None
                         raise APIConnectionError(str(err)) from err
                     self.__wire = session
                     self.__dst_id = int(host_ip.split(".")[-1])
@@ -859,6 +863,7 @@ class GwellIPCamClient:
 
     async def async_start_streaming(self) -> None:
         """Open the shared RTSP session and start the local header-fixing proxy; kept open for the entry's lifetime."""
+        await self.__rtsp_proxy.async_load_persisted_frame()
         await self.__rtsp_session.start()
         await self.__rtsp_proxy.start()
 
@@ -970,16 +975,43 @@ class GwellIPCamClient:
             raise APIConnectionError(msg)
         return dump.clean_values()
 
-    async def async_set_setting(self, setting_type: int, value: int, *, uid: str | None = None) -> dict[int, int]:
+    async def async_set_setting(
+        self,
+        setting_type: int,
+        value: int,
+        *,
+        uid: str | None = None,
+        verify_mask: int | None = None,
+        expected_value: int | None = None,
+    ) -> dict[int, int]:
         """Write a settingType/value pair, wait for a dump confirming it, and return that freshly-confirmed dump."""
         wire = await self.__get_wire()
         resolved_uid = uid or _new_uid()
         await wire.set_setting(setting_type, value, resolved_uid)
-        dump = await wire.get_settings_matching(
-            resolved_uid, lambda d: d.clean_values().get(setting_type) == value, _SET_SETTING_VERIFY_TIMEOUT_S
-        )
+        target = value if expected_value is None else expected_value
+        last_seen: list[int | None] = [None]
+
+        def _matches(dump: _SettingsDump) -> bool:
+            raw = dump.clean_values().get(setting_type)
+            read_back = raw if (raw is None or verify_mask is None) else raw & verify_mask
+            last_seen[0] = raw
+            LOGGER.debug(
+                "[%s] verify setting %s: wrote wire_value=%s, read raw=%s masked=%s, want=%s",
+                resolved_uid,
+                setting_type,
+                value,
+                raw,
+                read_back,
+                target,
+            )
+            return read_back == target
+
+        dump = await wire.get_settings_matching(resolved_uid, _matches, _SET_SETTING_VERIFY_TIMEOUT_S)
         if dump is None:
-            msg = f"setting {setting_type} did not change to {value} after writing it"
+            msg = (
+                f"setting {setting_type} did not change to {target} (wrote wire_value={value}) after writing it -- "
+                f"last read-back raw value was {last_seen[0]}"
+            )
             raise APIError(msg)
         return dump.clean_values()
 

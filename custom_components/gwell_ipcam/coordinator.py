@@ -139,14 +139,8 @@ async def _fetch_or_keep_previous[T](
             )
         else:
             LOGGER.debug(
-                "[%s] %s still failing after retries (%d/%d), keeping the last known value",
-                ctx.uid,
-                label,
-                streak,
-                _MAX_FALLBACK_STREAK,
+                "[%s] %s still failing after retries (%d), keeping the last known value", ctx.uid, label, streak
             )
-        if streak > _MAX_FALLBACK_STREAK:
-            raise
         return fallback.value
     else:
         if ctx.streaks.pop(label, None):
@@ -182,6 +176,7 @@ class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
             config_entry=config_entry,
             name=f"{config_entry.title} state",
             update_interval=timedelta(seconds=STATE_UPDATE_INTERVAL_S),
+            always_update=False,
         )
         self.__fallback_streaks: dict[str, int] = {}
         self.__auth_streaks: dict[str, int] = {}
@@ -289,6 +284,7 @@ class GwellIPCamRecordingsCoordinator(DataUpdateCoordinator[list[Recording]]):
             config_entry=config_entry,
             name=f"{config_entry.title} recordings",
             update_interval=timedelta(seconds=RECORDINGS_POLL_INTERVAL_S),
+            always_update=False,
         )
         self.__fallback_streaks: dict[str, int] = {}
         self.__auth_streaks: dict[str, int] = {}

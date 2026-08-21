@@ -6,6 +6,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import async_get_platforms
 
@@ -107,6 +108,9 @@ class GwellIPCamButton(GwellIPCamDescribedEntity[GwellIPCamCoordinator, ButtonEn
         LOGGER.debug("[%s] User pressed %s (%s)", uid, self.entity_id, key)
 
         if key in _PTZ_KEYS:
+            if self.coordinator.data is None:
+                msg = f"{self.entity_id}: camera settings aren't known yet, refusing to guess the PTZ flip direction"
+                raise HomeAssistantError(msg)
             direction = map_ptz_direction(key.removeprefix("ptz_"), self.coordinator.data.settings)
             await client.async_ptz(direction)
             return
@@ -128,9 +132,8 @@ class GwellIPCamButton(GwellIPCamDescribedEntity[GwellIPCamCoordinator, ButtonEn
             case "format_sd_card":
                 await client.async_format_sd_card(uid=uid)
             case "quick_record":
-                _active, fresh = await client.async_toggle_quick_record(
-                    current_settings=self.coordinator.data.settings, uid=uid
-                )
+                current_settings = self.coordinator.data.settings if self.coordinator.data is not None else None
+                _active, fresh = await client.async_toggle_quick_record(current_settings=current_settings, uid=uid)
                 self._tag_quick_record_side_effects()
                 self.coordinator.apply_fresh_settings(fresh)
                 self.async_write_ha_state()

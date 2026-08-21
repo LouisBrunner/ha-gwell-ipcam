@@ -9,13 +9,13 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .const import LOGGER, RTSP_PATH, RTSP_PORT, TALK_SAMPLE_RATE_HZ, WIRE_LOGGER
+from .const import DOMAIN, LOGGER, RTSP_PATH, RTSP_PORT, TALK_SAMPLE_RATE_HZ, WIRE_LOGGER
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from typing import Self
 
-_USER_AGENT = "gwell_ipcam/0.1"
+_USER_AGENT = f"{DOMAIN}/0.1"
 _INTERLEAVE_MARKER = 0x24
 _INTERLEAVE_HEADER_BYTES = 4
 _REQUEST_TIMEOUT_S = 8.0
