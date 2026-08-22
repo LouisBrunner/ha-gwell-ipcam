@@ -84,8 +84,8 @@ def make_client(hass: object = None) -> sc.GwellIPCamClient:
 
 
 class _FakeHass:
-    async def async_add_executor_job(self, fn):
-        return fn()
+    async def async_add_executor_job(self, fn, *args: str):
+        return fn(*args)
 
 
 # -- entry_password / weak-password reroll ------
@@ -759,27 +759,12 @@ def test_to_recording_maps_a_scheduled_recording():
 # -- GwellIPCamClient: quick record ---------------------------------------------
 
 
-class _FakeQuickRecordStore:
-    """Stands in for the persisted `Store`, so tests don't need real HA storage plumbing."""
-
-    def __init__(self) -> None:
-        self.saved: dict[str, int | None] | None = None
-
-    async def async_load(self) -> dict[str, int | None] | None:
-        return self.saved
-
-    async def async_save(self, data: dict[str, int | None]) -> None:
-        self.saved = data
-
-
 @pytest.mark.asyncio
 async def test_toggle_quick_record_starts_then_stops_and_restores_prior_mode():
     """Also covers that the *original* record mode (not a hardcoded one) is what gets restored."""
     client = make_client()
-    fake_store = _FakeQuickRecordStore()
     fresh_settings = {sc.SETTING_RECORD_TYPE: 0, sc.SETTING_REMOTE_RECORD: 1}
     with (
-        patch.object(client, "_GwellIPCamClient__get_quick_record_store", return_value=fake_store),
         patch.object(client, "async_get_settings", AsyncMock(return_value={sc.SETTING_RECORD_TYPE: 1})),
         patch.object(client, "async_set_setting", AsyncMock(return_value=fresh_settings)) as set_setting,
         patch.object(client, "async_set_recording_state", AsyncMock(return_value=fresh_settings)) as set_recording,
@@ -803,15 +788,13 @@ async def test_toggle_quick_record_starts_then_stops_and_restores_prior_mode():
 
 
 @pytest.mark.asyncio
-async def test_quick_record_state_survives_a_reload_via_the_store():
+async def test_quick_record_state_survives_a_reload_via_the_store(mock_store):
     """The whole point of persisting to a Store: a fresh client instance picks up the in-progress state."""
-    fake_store = _FakeQuickRecordStore()
-    fake_store.saved = {"saved_record_type": 2}
     client = make_client()
-    with patch.object(client, "_GwellIPCamClient__get_quick_record_store", return_value=fake_store):
-        assert client.quick_record_active is False
-        await client.async_load_quick_record_state()
-        assert client.quick_record_active is True
+    mock_store["quick_record"].saved = {"saved_record_type": 2}
+    assert client.quick_record_active is False
+    await client.async_load_quick_record_state()
+    assert client.quick_record_active is True
 
 
 # -- GwellIPCamClient: thin async wrappers around _get_wire ---------------------
@@ -1093,6 +1076,7 @@ async def test_async_start_stop_streaming_delegates_to_session_and_proxy():
     with (
         patch.object(client.rtsp_session, "start", AsyncMock()) as session_start,
         patch.object(client.rtsp_session, "stop", AsyncMock()) as session_stop,
+        patch.object(client._GwellIPCamClient__rtsp_proxy, "async_load_persisted_frame", AsyncMock()),
         patch.object(client._GwellIPCamClient__rtsp_proxy, "start", AsyncMock()) as proxy_start,
         patch.object(client._GwellIPCamClient__rtsp_proxy, "stop", AsyncMock()) as proxy_stop,
     ):
@@ -1105,31 +1089,34 @@ async def test_async_start_stop_streaming_delegates_to_session_and_proxy():
 
 
 @pytest.mark.asyncio
-async def test_async_close_wire_closes_and_clears_an_open_session():
+async def test_async_stop_streaming_closes_and_clears_an_open_wire():
     client = make_client()
     session = MagicMock()
     client._GwellIPCamClient__wire = session
-    await client.async_close_wire()
+    with (
+        patch.object(client.rtsp_session, "stop", AsyncMock()),
+        patch.object(client._GwellIPCamClient__rtsp_proxy, "stop", AsyncMock()),
+    ):
+        await client.async_stop_streaming()
     session.close.assert_called_once()
     assert client._GwellIPCamClient__wire is None
 
 
 @pytest.mark.asyncio
-async def test_async_close_wire_is_a_no_op_when_never_connected():
+async def test_async_stop_streaming_is_a_no_op_for_the_wire_when_never_connected():
     client = make_client()
-    await client.async_close_wire()  # must not raise
+    with (
+        patch.object(client.rtsp_session, "stop", AsyncMock()),
+        patch.object(client._GwellIPCamClient__rtsp_proxy, "stop", AsyncMock()),
+    ):
+        await client.async_stop_streaming()  # must not raise
 
 
 @pytest.mark.asyncio
 async def test_get_wire_closes_the_socket_when_binding_fails():
     """A failed bind/connect must not leak the raw socket; it should be closed before APIConnectionError propagates."""
-
-    class _FakeHassResolvingHost:
-        async def async_add_executor_job(self, fn, *args: str):
-            return fn(*args)
-
     client = sc.GwellIPCamClient(  # ty: ignore[invalid-argument-type]
-        hass=_FakeHassResolvingHost(), host="192.0.2.10", port=51880, password_hash="888888", entry_id="e"
+        hass=_FakeHass(), host="192.0.2.10", port=51880, password_hash="888888", entry_id="e"
     )
     fake_sock = MagicMock()
     fake_sock.bind.side_effect = OSError("address already in use")

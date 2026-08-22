@@ -722,6 +722,7 @@ hass = [
     { name = "homeassistant", version = "2026.4.2", source = { registry = "https://pypi.org/simple" } },
 ]
 test = [
+    { name = "av" },
     { name = "pytest-homeassistant-custom-component" },
 ]
 
@@ -738,7 +739,10 @@ hass = [
     { name = "av", specifier = "==18.0.0" },
     { name = "homeassistant", specifier = "==2026.4.2" },
 ]
-test = [{ name = "pytest-homeassistant-custom-component", specifier = "==0.13.346" }]
+test = [
+    { name = "av", specifier = "==18.0.0" },
+    { name = "pytest-homeassistant-custom-component", specifier = "==0.13.346" },
+]
 
 [[package]]
 name = "habluetooth"
@@ -1086,8 +1090,8 @@ name = "multidict"
 version = "6.7.1"
 source = { registry = "https://wheels.home-assistant.io/musllinux-index/" }
 wheels = [
-    { url = "https://wheels.home-assistant.io/musllinux-index/multidict-6.7.1-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:30a6ce1107a512956bebbbd82b799e39c35747ced01ac8bbc681835c6cb46577" },
-    { url = "https://wheels.home-assistant.io/musllinux-index/multidict-6.7.1-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:81cf7e25ba60fba79cb29b41d64e40786c01c766292d33374678b28e46550865" },
+    { url = "https://wheels.home-assistant.io/musllinux-index/multidict-6.7.1-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:387f52ebf91864e46336d205fde80f52023ebac4f0044ec6ddbcb9cf7380740f" },
+    { url = "https://wheels.home-assistant.io/musllinux-index/multidict-6.7.1-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:2e6828163f254a71cd3a0d95d6ae4ab3dd0f953ba6a89eaaf48566b358426997" },
     { url = "https://wheels.home-assistant.io/musllinux-index/multidict-6.7.1-py3-none-any.whl", hash = "sha256:55d97cc6dae627efa6a6e548885712d4864b81110ac76fa4e534c03819fa4a56" },
 ]
 

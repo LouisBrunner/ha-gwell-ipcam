@@ -55,7 +55,11 @@ class GwellIPCamFirmwareUpdate(GwellIPCamEntity[GwellIPCamCoordinator], UpdateEn
         initial_check_task = self.hass.async_create_background_task(
             self.__async_check_for_update(None), f"{self.unique_id}-initial-firmware-check"
         )
-        self.async_on_remove(initial_check_task.cancel)
+
+        def _cancel_initial_check() -> None:
+            initial_check_task.cancel()
+
+        self.async_on_remove(_cancel_initial_check)
         self.async_on_remove(
             async_track_time_interval(
                 self.hass, self.__async_check_for_update, timedelta(seconds=FIRMWARE_CHECK_INTERVAL_S)

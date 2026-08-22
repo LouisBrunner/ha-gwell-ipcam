@@ -100,7 +100,6 @@ _PASSWORD_BLOCK_BYTES = 8
 
 
 def _log_hex_redact_password(packet: bytes) -> str:
-    """Like `_log_hex`, but every outbound wire packet's password block (payload bytes 0-7) is never logged."""
     split = _HEADER_BYTES + _PASSWORD_BLOCK_BYTES
     if len(packet) < split:
         return _log_hex(packet)
@@ -279,7 +278,6 @@ class _RecFileEntry:
 
 
 def _resolve_ipv4(host: str) -> str:
-    """Resolve `host` to a dotted-quad IPv4 address, needed since dst_id is derived from its last octet."""
     try:
         ipaddress.IPv4Address(host)
     except ValueError:
@@ -537,6 +535,10 @@ class _Wire:
         self.__session = session
         self.__dst_id = dst_id
         self.__password_int = password_int
+
+    def close(self) -> None:
+        if self.__session is not None:
+            self.__session.close()
 
     def __password_block(self) -> bytes:
         """DES-ECB via TripleDES(key*3) -- cryptography dropped plain DES; K1=K2=K3 is equivalent."""
@@ -809,52 +811,54 @@ class GwellIPCamClient:
         self.__host = host
         self.__port = int(port)
         self.__password_int = entry_password(password_hash)
-        self.__entry_id = entry_id
         self.__rtsp_session = RTSPSession(host)
         self.__rtsp_proxy = RTSPProxyServer(self.__rtsp_session, hass=hass, entry_id=entry_id)
-        self.__quick_record_store: Store[dict[str, int | None]] | None = None
+        self.__quick_record_store: Store[dict[str, int | None]] = Store(
+            hass, version=1, key=f"{DOMAIN}.{entry_id}.quick_record"
+        )
         self.__quick_record_saved_type: int | None = None
         self.__quick_record_lock = asyncio.Lock()
-        self.__wire: _WireSession | None = None
-        self.__dst_id = 0
+        self.__wire: _Wire | None = None
         self.__wire_connect_lock = asyncio.Lock()
-        self.__host_ip: str | None = None
 
-    def __get_quick_record_store(self) -> Store[dict[str, int | None]]:
-        if self.__quick_record_store is None:
-            self.__quick_record_store = Store(self.__hass, version=1, key=f"{DOMAIN}.{self.__entry_id}.quick_record")
-        return self.__quick_record_store
+    @staticmethod
+    async def __open_wire(hass: HomeAssistant, host: str, port: int, password_int: int) -> _Wire:
+        session = _WireSession(host)
+        sock: socket.socket | None = None
+        try:
+            host_ip = await hass.async_add_executor_job(_resolve_ipv4, host)
+            loop = asyncio.get_running_loop()
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("0.0.0.0", port))  # noqa: S104
+            sock.connect((host_ip, port))
+            await loop.create_datagram_endpoint(lambda: session, sock=sock)
+        except OSError as err:
+            if sock is not None:
+                sock.close()
+            raise APIConnectionError(str(err)) from err
+        return _Wire(session, int(host_ip.rsplit(".", 1)[-1]), password_int)
+
+    @staticmethod
+    async def __fetch_identity(host: str, contact_id: str, wire: _Wire) -> CameraIdentity:
+        info = await wire.get_device_info(_new_uid())
+        if info is None:
+            msg = f"camera at {host} did not respond to an authenticated request"
+            raise APIAuthError(msg)
+        return CameraIdentity(
+            contact_id=contact_id,
+            name=f"IPCam-{contact_id}",
+            model=_DEFAULT_MODEL_NAME,
+            firmware_version=str(info["device_version"]),
+        )
 
     async def __get_wire(self) -> _Wire:
-        if self.__wire is None:
-            async with self.__wire_connect_lock:
-                if self.__wire is None:
-                    session = _WireSession(self.__host)
-                    sock: socket.socket | None = None
-                    try:
-                        if self.__host_ip is None:
-                            self.__host_ip = await self.__hass.async_add_executor_job(_resolve_ipv4, self.__host)
-                        host_ip = self.__host_ip
-                        loop = asyncio.get_running_loop()
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                        sock.bind(("0.0.0.0", self.__port))  # noqa: S104 -- any local interface
-                        sock.connect((host_ip, self.__port))
-                        await loop.create_datagram_endpoint(lambda: session, sock=sock)
-                    except OSError as err:
-                        if sock is not None:
-                            sock.close()
-                        self.__host_ip = None
-                        raise APIConnectionError(str(err)) from err
-                    self.__wire = session
-                    self.__dst_id = int(host_ip.split(".")[-1])
-        return _Wire(self.__wire, self.__dst_id, self.__password_int)
-
-    async def async_close_wire(self) -> None:
-        """Close the persistent UDP session; safe to call even if it was never opened."""
         if self.__wire is not None:
-            self.__wire.close()
-            self.__wire = None
+            return self.__wire
+        async with self.__wire_connect_lock:
+            if self.__wire is None:
+                self.__wire = await self.__open_wire(self.__hass, self.__host, self.__port, self.__password_int)
+        return self.__wire
 
     @property
     def rtsp_session(self) -> RTSPSession:
@@ -874,7 +878,9 @@ class GwellIPCamClient:
         await self.__rtsp_proxy.stop()
         LOGGER.debug("Stopped local RTSP proxy in %.3fs, stopping upstream RTSP session", time.monotonic() - started)
         await self.__rtsp_session.stop()
-        await self.async_close_wire()
+        if self.__wire is not None:
+            self.__wire.close()
+            self.__wire = None
         LOGGER.debug("Stopped streaming in %.3fs total", time.monotonic() - started)
 
     async def async_ptz(self, direction: str, *, steps: int = 1, step_delay_ms: int = 200) -> None:
@@ -905,11 +911,15 @@ class GwellIPCamClient:
     @staticmethod
     async def async_check_connection(hass: HomeAssistant, host: str, port: int, password_hash: str) -> CameraIdentity:
         """Verify that a camera is reachable and accepts the given password hash."""
-        client = GwellIPCamClient(hass=hass, host=host, port=port, password_hash=password_hash, entry_id="")
+        found = await GwellIPCamClient.async_discover_one(hass, host)
+        if found is None:
+            msg = f"no discovery reply from {host}"
+            raise APIConnectionError(msg)
+        wire = await GwellIPCamClient.__open_wire(hass, host, port, entry_password(password_hash))
         try:
-            return await client.async_get_identity()
+            return await GwellIPCamClient.__fetch_identity(host, found.contact_id, wire)
         finally:
-            await client.async_close_wire()
+            wire.close()
 
     async def async_get_identity(self) -> CameraIdentity:
         """Fetch the camera's identity. Name is synthesized -- no wire field carries one."""
@@ -917,18 +927,8 @@ class GwellIPCamClient:
         if found is None:
             msg = f"no discovery reply from {self.__host}"
             raise APIConnectionError(msg)
-        contact_id = found.contact_id
         wire = await self.__get_wire()
-        info = await wire.get_device_info(_new_uid())
-        if info is None:
-            msg = f"camera at {self.__host} did not respond to an authenticated request"
-            raise APIAuthError(msg)
-        return CameraIdentity(
-            contact_id=contact_id,
-            name=f"IPCam-{contact_id}",
-            model=_DEFAULT_MODEL_NAME,
-            firmware_version=str(info["device_version"]),
-        )
+        return await self.__fetch_identity(self.__host, found.contact_id, wire)
 
     async def async_get_camera_time(self, *, uid: str | None = None) -> datetime:
         """Fetch the camera's clock, localized to HA's configured timezone (camera keeps no tz of its own)."""
@@ -1031,7 +1031,7 @@ class GwellIPCamClient:
 
     async def async_load_quick_record_state(self) -> None:
         """Load the persisted quick-record state once at startup; call before reading `quick_record_active`."""
-        data = await self.__get_quick_record_store().async_load()
+        data = await self.__quick_record_store.async_load()
         self.__quick_record_saved_type = data.get("saved_record_type") if data else None
 
     @property
@@ -1049,7 +1049,7 @@ class GwellIPCamClient:
                 saved_type = settings.get(SETTING_RECORD_TYPE, RECORD_TYPE_MANUAL)
                 await self.async_set_setting(SETTING_RECORD_TYPE, RECORD_TYPE_MANUAL, uid=uid)
                 self.__quick_record_saved_type = saved_type
-                await self.__get_quick_record_store().async_save({"saved_record_type": saved_type})
+                await self.__quick_record_store.async_save({"saved_record_type": saved_type})
                 fresh = await self.async_set_recording_state(enabled=True, uid=uid)
                 return True, fresh
 
@@ -1057,7 +1057,7 @@ class GwellIPCamClient:
             await self.async_set_recording_state(enabled=False, uid=uid)
             fresh = await self.async_set_setting(SETTING_RECORD_TYPE, saved_type, uid=uid)
             self.__quick_record_saved_type = None
-            await self.__get_quick_record_store().async_save({"saved_record_type": None})
+            await self.__quick_record_store.async_save({"saved_record_type": None})
             return False, fresh
 
     async def async_get_record_quality(self, *, uid: str | None = None) -> int | None:
