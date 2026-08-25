@@ -22,6 +22,7 @@ _REQUEST_TIMEOUT_S = 8.0
 _RECONNECT_INTERVAL_S = 15.0
 _INITIAL_RECONNECT_INTERVAL_S = 2.0
 _CANCEL_TIMEOUT_S = 5.0
+_IDLE_READ_TIMEOUT_S = 20.0
 
 
 async def cancel_and_wait(task: asyncio.Task) -> None:
@@ -350,7 +351,11 @@ class RTSPSession:
         assert self.__reader is not None  # noqa: S101
         buf = bytearray()
         while True:
-            chunk = await self.__reader.read(4096)
+            try:
+                chunk = await asyncio.wait_for(self.__reader.read(4096), timeout=_IDLE_READ_TIMEOUT_S)
+            except TimeoutError as exception:
+                msg = f"no data received for {_IDLE_READ_TIMEOUT_S:.0f}s"
+                raise RTSPError(msg) from exception
             if not chunk:
                 return  # __supervise() logs the offline transition
             buf.extend(chunk)

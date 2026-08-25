@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -63,3 +64,21 @@ async def test_a_failed_handshake_step_closes_the_writer_instead_of_leaking_the_
         await session._RTSPSession__try_connect_once()
     assert writer.close.called
     assert not session.online
+
+
+class _HangingReader:
+    async def read(self, _n: int) -> bytes:
+        await asyncio.Future()
+        raise AssertionError("unreachable")  # pragma: no cover
+
+
+@pytest.mark.asyncio
+async def test_read_loop_raises_when_the_camera_goes_silent_without_closing_the_socket():
+    """A stalled-but-not-closed connection must not hang the reader forever, or `online` never flips to False."""
+    session = sc.RTSPSession("192.0.2.10")
+    session._RTSPSession__reader = _HangingReader()
+    with (
+        patch.object(sc, "_IDLE_READ_TIMEOUT_S", 0.05),
+        pytest.raises(sc.RTSPError, match="no data received"),
+    ):
+        await session._RTSPSession__read_loop()
