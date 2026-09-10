@@ -256,12 +256,12 @@ class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
         )
         if abs((dt_util.utcnow() - camera_time).total_seconds()) > CLOCK_DRIFT_THRESHOLD_S:
             LOGGER.info("[%s] Camera clock drifted from %s, syncing", uid, camera_time)
-            try:
-                camera_time = await _call_with_retry(
-                    probe, uid, "sync_time", lambda: client.async_sync_time(uid=uid), ctx.auth_streaks
-                )
-            except UpdateFailed as exception:
-                LOGGER.warning("[%s] Camera clock sync failed, keeping the drifted value: %s", uid, exception)
+            camera_time = await _fetch_or_keep_previous(
+                ctx,
+                "sync_time",
+                lambda: client.async_sync_time(uid=uid),
+                _Fallback(has_previous=True, value=camera_time),
+            )
         LOGGER.debug("[%s] Finished state check in %.3fs", uid, time.monotonic() - started)
         return GwellIPCamState(
             camera_time=camera_time,

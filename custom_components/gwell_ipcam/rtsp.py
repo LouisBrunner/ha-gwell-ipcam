@@ -23,6 +23,7 @@ _RECONNECT_INTERVAL_S = 15.0
 _INITIAL_RECONNECT_INTERVAL_S = 2.0
 _CANCEL_TIMEOUT_S = 5.0
 _IDLE_READ_TIMEOUT_S = 20.0
+_CONNECT_ATTEMPT_TIMEOUT_S = 60.0
 
 
 async def cancel_and_wait(task: asyncio.Task) -> None:
@@ -186,7 +187,7 @@ class RTSPSession:
     async def __try_connect_once(self) -> None:
         """Attempt one connection, updating online/offline state; never raises."""
         try:
-            await self.__connect_once()
+            await asyncio.wait_for(self.__connect_once(), timeout=_CONNECT_ATTEMPT_TIMEOUT_S)
         except (OSError, RTSPError, TimeoutError) as exception:
             await self.__disconnect()
             self.__mark_offline(exception)
