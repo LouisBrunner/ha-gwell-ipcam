@@ -28,8 +28,10 @@ _CONNECT_ATTEMPT_TIMEOUT_S = 60.0
 
 async def cancel_and_wait(task: asyncio.Task) -> None:
     """Cancel `task` and wait for it, bounded so a stuck task can never hang shutdown indefinitely."""
+    if task.done():
+        return
     task.cancel()
-    with contextlib.suppress(asyncio.CancelledError, TimeoutError):
+    with contextlib.suppress(asyncio.CancelledError, TimeoutError, StopAsyncIteration):
         await asyncio.wait_for(task, timeout=_CANCEL_TIMEOUT_S)
 
 
@@ -225,6 +227,14 @@ class RTSPSession:
                 self.__mark_offline(RTSPError("connection dropped"))
             await self.__disconnect()
             await asyncio.sleep(_RECONNECT_INTERVAL_S)
+
+    def restart_supervisor_if_dead(self) -> None:
+        """Recreate the reconnect loop if it crashed outright; only reacts after the fact, never suppresses."""
+        if self.__supervisor_task is None or not self.__supervisor_task.done():
+            return
+        exception = self.__supervisor_task.exception()
+        LOGGER.error("[%s] RTSP reconnect loop died unexpectedly, restarting it: %s", self.__host, exception)
+        self.__supervisor_task = asyncio.get_running_loop().create_task(self.__supervise())
 
     def __mark_online(self) -> None:
         was_offline = not self.__online

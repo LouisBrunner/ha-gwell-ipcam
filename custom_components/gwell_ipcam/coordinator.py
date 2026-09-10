@@ -223,6 +223,7 @@ class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
     async def _async_update_data(self) -> GwellIPCamState:
         """Fetch the camera's general state; a field still failing after retries keeps its last known value."""
         client = self.config_entry.runtime_data.client
+        client.rtsp_session.restart_supervisor_if_dead()
         probe = _Probe(self.hass, self.config_entry.data[CONF_HOST])
         previous = self.data
         uid = uuid.uuid4().hex[:8]
