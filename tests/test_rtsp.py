@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import gc
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -50,6 +51,35 @@ def test_parse_cseq_rejects_an_unparsable_value():
     """A malformed CSeq used to raise a bare ValueError that killed the reconnect supervisor permanently."""
     with pytest.raises(sc.RTSPError, match="unparsable"):
         sc._parse_cseq("not-a-number")
+
+
+@pytest.mark.asyncio
+async def test_cancel_and_wait_does_not_leave_an_already_failed_tasks_exception_unretrieved(caplog):
+    """Returning early for an already-done task must still consume its exception, not just avoid re-raising it."""
+
+    async def _failed() -> None:
+        msg = "boom"
+        raise sc.RTSPError(msg)
+
+    task = asyncio.ensure_future(_failed())
+    with pytest.raises(sc.RTSPError):
+        await task
+
+    with caplog.at_level("ERROR", logger="asyncio"):
+        await sc.cancel_and_wait(task)
+        del task
+        gc.collect()
+    assert "was never retrieved" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_cancel_and_wait_does_not_reraise_cancelled_error_for_an_already_cancelled_task():
+    task = asyncio.ensure_future(asyncio.sleep(10))
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.wait_for(sc.cancel_and_wait(task), timeout=1)
 
 
 @pytest.mark.asyncio

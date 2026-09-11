@@ -241,6 +241,8 @@ class RTSPProxyServer:
                         )
                     except TimeoutError:
                         continue
+                    except StopAsyncIteration:
+                        return
                     count += 1
                     if count <= 3 or count % 50 == 0:  # noqa: PLR2004
                         LOGGER.debug(

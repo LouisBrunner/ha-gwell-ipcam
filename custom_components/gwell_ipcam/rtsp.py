@@ -29,6 +29,8 @@ _CONNECT_ATTEMPT_TIMEOUT_S = 60.0
 async def cancel_and_wait(task: asyncio.Task) -> None:
     """Cancel `task` and wait for it, bounded so a stuck task can never hang shutdown indefinitely."""
     if task.done():
+        if not task.cancelled():
+            task.exception()
         return
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError, TimeoutError, StopAsyncIteration):
