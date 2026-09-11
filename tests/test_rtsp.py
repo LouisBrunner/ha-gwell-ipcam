@@ -107,8 +107,8 @@ async def test_disconnect_does_not_hang_after_the_read_loop_already_raised():
 
 
 @pytest.mark.asyncio
-async def test_supervise_survives_an_unanticipated_bug_instead_of_dying_silently():
-    """An exception type nobody anticipated must not permanently kill the reconnect loop unnoticed."""
+async def test_supervise_does_not_swallow_an_unanticipated_bug():
+    """A real coding mistake (e.g. a typo) must crash loudly, not get absorbed as routine retry noise."""
     session = sc.RTSPSession("192.0.2.10")
     session._RTSPSession__online = False
 
@@ -118,10 +118,56 @@ async def test_supervise_survives_an_unanticipated_bug_instead_of_dying_silently
 
     with patch.object(session, "_RTSPSession__try_connect_once", _boom):
         task = asyncio.ensure_future(session._RTSPSession__supervise())
-        try:
-            await asyncio.sleep(0.05)
-            assert not task.done(), f"supervisor task died: {task.exception() if task.done() else None}"
-        finally:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        await asyncio.sleep(0.05)
+        assert task.done()
+        assert isinstance(task.exception(), TypeError)
+
+
+@pytest.mark.asyncio
+async def test_restart_supervisor_if_dead_is_a_noop_while_the_loop_is_still_running():
+    session = sc.RTSPSession("192.0.2.10")
+    session._RTSPSession__online = False
+
+    async def _stall() -> None:
+        await asyncio.Future()
+
+    with patch.object(session, "_RTSPSession__try_connect_once", _stall):
+        task = asyncio.ensure_future(session._RTSPSession__supervise())
+        session._RTSPSession__supervisor_task = task
+        await asyncio.sleep(0.05)
+
+        session.restart_supervisor_if_dead()
+        assert session._RTSPSession__supervisor_task is task
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_restart_supervisor_if_dead_recreates_a_crashed_loop():
+    """The coordinator calls this every poll cycle; a crashed loop must come back, not stay dead forever."""
+    session = sc.RTSPSession("192.0.2.10")
+    session._RTSPSession__online = False
+
+    async def _boom() -> None:
+        msg = "not a network error at all"
+        raise TypeError(msg)
+
+    dead_task = asyncio.ensure_future(_boom())
+    with contextlib.suppress(TypeError):
+        await dead_task
+    session._RTSPSession__supervisor_task = dead_task
+
+    async def _stall() -> None:
+        await asyncio.Future()
+
+    with patch.object(session, "_RTSPSession__try_connect_once", _stall):
+        session.restart_supervisor_if_dead()
+        new_task = session._RTSPSession__supervisor_task
+        assert new_task is not dead_task
+        assert not new_task.done()
+
+        new_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await new_task
