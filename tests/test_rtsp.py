@@ -87,7 +87,7 @@ async def test_a_failed_handshake_step_closes_the_writer_instead_of_leaking_the_
     """A failure partway through OPTIONS/DESCRIBE/SETUP/PLAY must not leave the TCP connection open and unreferenced."""
     writer = MagicMock()
     writer.wait_closed = AsyncMock()
-    session = sc.RTSPSession("192.0.2.10")
+    session = sc.RTSPSession("192.0.2.10", sc.CameraLinkStatus())
     with (
         patch("asyncio.open_connection", AsyncMock(return_value=(MagicMock(), writer))),
         patch.object(sc, "_simple_request", AsyncMock(side_effect=sc.RTSPError("boom"))),
@@ -106,7 +106,7 @@ class _HangingReader:
 @pytest.mark.asyncio
 async def test_read_loop_raises_when_the_camera_goes_silent_without_closing_the_socket():
     """A stalled-but-not-closed connection must not hang the reader forever, or `online` never flips to False."""
-    session = sc.RTSPSession("192.0.2.10")
+    session = sc.RTSPSession("192.0.2.10", sc.CameraLinkStatus())
     session._RTSPSession__reader = _HangingReader()
     with (
         patch.object(sc, "_IDLE_READ_TIMEOUT_S", 0.05),
@@ -118,7 +118,7 @@ async def test_read_loop_raises_when_the_camera_goes_silent_without_closing_the_
 @pytest.mark.asyncio
 async def test_disconnect_does_not_hang_after_the_read_loop_already_raised():
     """`__disconnect()` cancels the same already-finished `__reader_task` `__supervise` just awaited -- mustn't hang."""
-    session = sc.RTSPSession("192.0.2.10")
+    session = sc.RTSPSession("192.0.2.10", sc.CameraLinkStatus())
 
     async def _already_failed() -> None:
         msg = "no data received for 20s"
@@ -139,7 +139,7 @@ async def test_disconnect_does_not_hang_after_the_read_loop_already_raised():
 @pytest.mark.asyncio
 async def test_supervise_does_not_swallow_an_unanticipated_bug():
     """A real coding mistake (e.g. a typo) must crash loudly, not get absorbed as routine retry noise."""
-    session = sc.RTSPSession("192.0.2.10")
+    session = sc.RTSPSession("192.0.2.10", sc.CameraLinkStatus())
     session._RTSPSession__online = False
 
     async def _boom() -> None:
@@ -155,7 +155,7 @@ async def test_supervise_does_not_swallow_an_unanticipated_bug():
 
 @pytest.mark.asyncio
 async def test_restart_supervisor_if_dead_is_a_noop_while_the_loop_is_still_running():
-    session = sc.RTSPSession("192.0.2.10")
+    session = sc.RTSPSession("192.0.2.10", sc.CameraLinkStatus())
     session._RTSPSession__online = False
 
     async def _stall() -> None:
@@ -177,7 +177,7 @@ async def test_restart_supervisor_if_dead_is_a_noop_while_the_loop_is_still_runn
 @pytest.mark.asyncio
 async def test_restart_supervisor_if_dead_recreates_a_crashed_loop():
     """The coordinator calls this every poll cycle; a crashed loop must come back, not stay dead forever."""
-    session = sc.RTSPSession("192.0.2.10")
+    session = sc.RTSPSession("192.0.2.10", sc.CameraLinkStatus())
     session._RTSPSession__online = False
 
     async def _boom() -> None:

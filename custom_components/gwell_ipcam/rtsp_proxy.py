@@ -16,6 +16,7 @@ _CANCEL_TIMEOUT_S = 5.0
 _REQUEST_READ_TIMEOUT_S = 8.0
 _MAX_CONTENT_LENGTH = 262144
 _ONLINE_POLL_TIMEOUT_S = 1.0
+_VIDEO_RTP_CLOCK_HZ = 90000  # RFC 6184
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -115,6 +116,15 @@ class RTSPProxyServer:
         self.__hass = hass
         self.__frame_cache = FrameCache(hass, entry_id)
         self.__feeder_task: asyncio.Task[None] | None = None
+        self.__video_ts_epoch = time.monotonic()
+
+    def __current_video_rtp_timestamp(self) -> int:
+        elapsed_s = time.monotonic() - self.__video_ts_epoch
+        return int(elapsed_s * _VIDEO_RTP_CLOCK_HZ) & 0xFFFFFFFF
+
+    @staticmethod
+    def __with_rtp_timestamp(rtp_packet: bytes, timestamp: int) -> bytes:
+        return rtp_packet[:4] + timestamp.to_bytes(4, "big") + rtp_packet[8:]
 
     @property
     def port(self) -> int:
@@ -248,6 +258,8 @@ class RTSPProxyServer:
                         LOGGER.debug(
                             "local RTSP proxy: forwarded frame #%d channel=%d len=%d", count, channel, len(payload)
                         )
+                    if channel == VIDEO_CHANNELS[0]:
+                        payload = self.__with_rtp_timestamp(payload, self.__current_video_rtp_timestamp())
                     header = bytes([0x24, channel]) + len(payload).to_bytes(2, "big")
                     writer.write(header + payload)
                     await writer.drain()
@@ -261,7 +273,10 @@ class RTSPProxyServer:
             count = 0
             while not self._session.online:
                 message = str(self._session.last_error) if self._session.last_error else "camera offline"
-                packets = await self.__hass.async_add_executor_job(self.__render_and_encode, encoder, message)
+                rtp_timestamp = self.__current_video_rtp_timestamp()
+                packets = await self.__hass.async_add_executor_job(
+                    self.__render_and_encode, encoder, message, rtp_timestamp
+                )
                 for frame in packets:
                     writer.write(frame)
                 await writer.drain()
@@ -272,6 +287,6 @@ class RTSPProxyServer:
         finally:
             LOGGER.info("local RTSP proxy: fallback forward task ended after %d frames", count)
 
-    def __render_and_encode(self, encoder: FallbackEncoder, error: str) -> list[bytes]:
+    def __render_and_encode(self, encoder: FallbackEncoder, error: str, rtp_timestamp: int) -> list[bytes]:
         image = self.__frame_cache.render(error=error)
-        return list(encoder.encode(image))
+        return list(encoder.encode(image, rtp_timestamp=rtp_timestamp))

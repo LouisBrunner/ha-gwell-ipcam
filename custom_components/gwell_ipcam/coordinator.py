@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
     from .data import GwellIPCamConfigEntry
+    from .rtsp import CameraLinkStatus
 
 
 @dataclass
@@ -118,6 +119,7 @@ class _FetchContext:
     uid: str
     streaks: dict[str, int]
     auth_streaks: dict[str, int]
+    link_status: CameraLinkStatus
 
 
 async def _fetch_or_keep_previous[T](
@@ -131,18 +133,14 @@ async def _fetch_or_keep_previous[T](
             raise
         streak = ctx.streaks.get(label, 0) + 1
         ctx.streaks[label] = streak
-        if streak == 1:
-            LOGGER.warning("[%s] %s failed, keeping the last known value while retrying", ctx.uid, label)
-        elif streak == _MAX_FALLBACK_STREAK + 1:
-            LOGGER.warning(
-                "[%s] %s failed %d times in a row, no longer serving the stale value", ctx.uid, label, streak
-            )
+        if not ctx.link_status.offline:
+            LOGGER.warning("[%s] %s failed", ctx.uid, label)
         else:
-            LOGGER.debug(
-                "[%s] %s still failing after retries (%d), keeping the last known value", ctx.uid, label, streak
-            )
+            LOGGER.debug("[%s] %s still failing after retries (%d)", ctx.uid, label, streak)
+        ctx.link_status.mark_offline()
         return fallback.value
     else:
+        ctx.link_status.mark_online()
         if ctx.streaks.pop(label, None):
             LOGGER.info("[%s] %s recovered", ctx.uid, label)
         return result
@@ -227,7 +225,7 @@ class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
         probe = _Probe(self.hass, self.config_entry.data[CONF_HOST])
         previous = self.data
         uid = uuid.uuid4().hex[:8]
-        ctx = _FetchContext(probe, uid, self.__fallback_streaks, self.__auth_streaks)
+        ctx = _FetchContext(probe, uid, self.__fallback_streaks, self.__auth_streaks, client.link_status)
         started = time.monotonic()
         LOGGER.debug("[%s] Starting state check", uid)
         has_previous = previous is not None
@@ -296,7 +294,7 @@ class GwellIPCamRecordingsCoordinator(DataUpdateCoordinator[list[Recording]]):
         probe = _Probe(self.hass, self.config_entry.data[CONF_HOST])
         previous = self.data
         uid = uuid.uuid4().hex[:8]
-        ctx = _FetchContext(probe, uid, self.__fallback_streaks, self.__auth_streaks)
+        ctx = _FetchContext(probe, uid, self.__fallback_streaks, self.__auth_streaks, client.link_status)
         started = time.monotonic()
         LOGGER.debug("[%s] Starting recordings check", uid)
         recordings = await _fetch_or_keep_previous(

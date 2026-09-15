@@ -244,9 +244,6 @@ class FallbackEncoder:
 
     _RTP_VERSION_BYTE = 0x80
     _RTP_PAYLOAD_TYPE_H264 = 96
-    _RTP_CLOCK_HZ = 90000  # RFC 6184
-
-    _TIMESTAMP_STEP = _RTP_CLOCK_HZ // FALLBACK_FPS
     _CHANNEL = VIDEO_CHANNELS[0]
     _SSRC = 0xFA11BACC
 
@@ -258,7 +255,6 @@ class FallbackEncoder:
         self.__codec.framerate = Fraction(FALLBACK_FPS, 1)
         self.__codec.time_base = Fraction(1, FALLBACK_FPS)
         self.__codec.options = {"tune": "stillimage", "preset": "ultrafast", "g": "1"}
-        self.__timestamp = 0
         self.__count = 0
         self.__seq = itertools.count()
 
@@ -288,18 +284,17 @@ class FallbackEncoder:
         """Return the number of frames encoded so far."""
         return self.__count
 
-    def encode(self, image: Image.Image) -> Generator[bytes]:
+    def encode(self, image: Image.Image, *, rtp_timestamp: int) -> Generator[bytes]:
         """Encode the given image to H264 NAL units and yield RTP packets."""
         nals = self.__encode_image(image, pts=self.__count)
         for i, nal in enumerate(nals):
             packet = self.__rtp_packets_for_nal(
                 nal,
                 sequence=next(self.__seq),
-                timestamp=self.__timestamp,
+                timestamp=rtp_timestamp,
                 ssrc=self._SSRC,
                 marker=(i == len(nals) - 1),
             )
             header = bytes([0x24, self._CHANNEL]) + len(packet).to_bytes(2, "big")
             yield header + packet
         self.__count += 1
-        self.__timestamp = (self.__timestamp + self._TIMESTAMP_STEP) & 0xFFFFFFFF

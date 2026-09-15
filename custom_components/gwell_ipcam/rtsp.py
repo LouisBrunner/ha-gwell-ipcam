@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .const import DOMAIN, LOGGER, RTSP_PATH, RTSP_PORT, TALK_SAMPLE_RATE_HZ, WIRE_LOGGER
@@ -24,6 +24,26 @@ _INITIAL_RECONNECT_INTERVAL_S = 2.0
 _CANCEL_TIMEOUT_S = 5.0
 _IDLE_READ_TIMEOUT_S = 20.0
 _CONNECT_ATTEMPT_TIMEOUT_S = 60.0
+
+
+@dataclass
+class CameraLinkStatus:
+    """A failure from any protocol marks the camera offline; a success from any protocol marks it back online."""
+
+    _offline: bool = field(default=False, init=False)
+
+    def mark_offline(self) -> None:
+        """Record a failure from any protocol."""
+        self._offline = True
+
+    def mark_online(self) -> None:
+        """Record a success from any protocol."""
+        self._offline = False
+
+    @property
+    def offline(self) -> bool:
+        """Whether the camera is currently considered offline by any protocol."""
+        return self._offline
 
 
 async def cancel_and_wait(task: asyncio.Task) -> None:
@@ -154,9 +174,10 @@ async def _simple_request(
 class RTSPSession:
     """One long-lived, auto-reconnecting RTSP connection; PTZ shares it, push-to-talk uses a separate TalkSession."""
 
-    def __init__(self, host: str) -> None:
+    def __init__(self, host: str, link_status: CameraLinkStatus) -> None:
         """Initialize with the camera's LAN host/IP. Call start() before use."""
         self.__host = host
+        self.__link_status = link_status
         self.__reader: asyncio.StreamReader | None = None
         self.__writer: asyncio.StreamWriter | None = None
         self.__reader_task: asyncio.Task[None] | None = None
@@ -239,21 +260,21 @@ class RTSPSession:
         self.__supervisor_task = asyncio.get_running_loop().create_task(self.__supervise())
 
     def __mark_online(self) -> None:
-        was_offline = not self.__online
         self.__online = True
         self.__last_error = None
-        if was_offline:
+        if self.__link_status.offline:
             LOGGER.info("RTSP connection to %s is back online", self.__host)
+        self.__link_status.mark_online()
 
     def __mark_offline(self, exception: Exception) -> None:
         # Warning only on the online->offline edge; the camera is usually off, so every retry would spam the log.
-        was_online = self.__online
         self.__online = False
         self.__last_error = exception
-        if was_online:
+        if not self.__link_status.offline:
             LOGGER.warning("RTSP connection to %s went offline: %s", self.__host, exception)
         else:
             LOGGER.debug("RTSP connection to %s still offline: %s", self.__host, exception)
+        self.__link_status.mark_offline()
 
     async def __connect_once(self) -> None:
         # Bounded: an unreachable host's own TCP connect timeout can run to a minute or more otherwise.

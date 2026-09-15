@@ -21,7 +21,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import DEFAULT_PORT, DOMAIN, LOGGER, RTSP_PATH, WIRE_LOGGER
-from .rtsp import RTSPSession, TalkSession
+from .rtsp import CameraLinkStatus, RTSPSession, TalkSession
 from .rtsp_proxy import RTSPProxyServer
 
 if TYPE_CHECKING:
@@ -360,6 +360,7 @@ class _ShapeSpec:
 
 _MSGID_MIN = 30000
 _MSGID_MAX = 39999
+_MSGID_QUARANTINE_S = 60.0
 
 
 class _WireSession(asyncio.DatagramProtocol):
@@ -369,6 +370,7 @@ class _WireSession(asyncio.DatagramProtocol):
         self.__host = host
         self.__transport: asyncio.DatagramTransport | None = None
         self.__by_msgid: dict[int, tuple[int, asyncio.Future[bytes]]] = {}
+        self.__quarantined_until: dict[int, float] = {}
         self.__next_msgid = random.randint(_MSGID_MIN, _MSGID_MAX)  # noqa: S311 -- not a security use
         self.__rec_files_fut: asyncio.Future[bytes] | None = None
         self.__format_fut: asyncio.Future[bytes] | None = None
@@ -475,10 +477,15 @@ class _WireSession(asyncio.DatagramProtocol):
             self.__transport = None
 
     def alloc_msgid(self) -> int:
+        now = time.monotonic()
         for _ in range(_MSGID_MAX - _MSGID_MIN + 1):
             msgid = self.__next_msgid
             self.__next_msgid = _MSGID_MIN if msgid >= _MSGID_MAX else msgid + 1
-            if msgid not in self.__by_msgid:
+            quarantined_until = self.__quarantined_until.get(msgid)
+            if quarantined_until is not None and quarantined_until <= now:
+                del self.__quarantined_until[msgid]
+                quarantined_until = None
+            if msgid not in self.__by_msgid and quarantined_until is None:
                 return msgid
         msg = "no free msgid available"
         raise APIError(msg)
@@ -498,6 +505,7 @@ class _WireSession(asyncio.DatagramProtocol):
             raise APIConnectionError(str(err)) from err
         finally:
             self.__by_msgid.pop(msgid, None)
+            self.__quarantined_until[msgid] = time.monotonic() + _MSGID_QUARANTINE_S
 
     async def send_and_wait_rec_files(self, send: Callable[[], None], timeout_s: float) -> bytes | None:
         async with self.__rec_files_lock:
@@ -811,7 +819,8 @@ class GwellIPCamClient:
         self.__host = host
         self.__port = int(port)
         self.__password_int = entry_password(password_hash)
-        self.__rtsp_session = RTSPSession(host)
+        self.__link_status = CameraLinkStatus()
+        self.__rtsp_session = RTSPSession(host, self.__link_status)
         self.__rtsp_proxy = RTSPProxyServer(self.__rtsp_session, hass=hass, entry_id=entry_id)
         self.__quick_record_store: Store[dict[str, int | None]] = Store(
             hass, version=1, key=f"{DOMAIN}.{entry_id}.quick_record"
@@ -864,6 +873,11 @@ class GwellIPCamClient:
     def rtsp_session(self) -> RTSPSession:
         """The shared upstream RTSP session (for the assist_satellite mic feed)."""
         return self.__rtsp_session
+
+    @property
+    def link_status(self) -> CameraLinkStatus:
+        """Cross-protocol reachability, shared between the RTSP session and every UDP-based poll."""
+        return self.__link_status
 
     async def async_start_streaming(self) -> None:
         """Open the shared RTSP session and start the local header-fixing proxy; kept open for the entry's lifetime."""
