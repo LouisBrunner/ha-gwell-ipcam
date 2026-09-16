@@ -22,7 +22,7 @@ _REQUEST_TIMEOUT_S = 8.0
 _RECONNECT_INTERVAL_S = 15.0
 _INITIAL_RECONNECT_INTERVAL_S = 2.0
 _CANCEL_TIMEOUT_S = 5.0
-_IDLE_READ_TIMEOUT_S = 20.0
+_IDLE_READ_TIMEOUT_S = 8.0
 _CONNECT_ATTEMPT_TIMEOUT_S = 60.0
 
 
@@ -249,7 +249,7 @@ class RTSPSession:
             else:
                 self.__mark_offline(RTSPError("connection dropped"))
             await self.__disconnect()
-            await asyncio.sleep(_RECONNECT_INTERVAL_S)
+            await asyncio.sleep(_INITIAL_RECONNECT_INTERVAL_S)
 
     def restart_supervisor_if_dead(self) -> None:
         """Recreate the reconnect loop if it crashed outright; only reacts after the fact, never suppresses."""

@@ -17,6 +17,7 @@ _REQUEST_READ_TIMEOUT_S = 8.0
 _MAX_CONTENT_LENGTH = 262144
 _ONLINE_POLL_TIMEOUT_S = 1.0
 _VIDEO_RTP_CLOCK_HZ = 90000  # RFC 6184
+_RTP_MARKER_BIT = 0x80  # byte 1 of the RTP header: set on the last packet of a frame (RFC 3550/6184)
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -116,11 +117,19 @@ class RTSPProxyServer:
         self.__hass = hass
         self.__frame_cache = FrameCache(hass, entry_id)
         self.__feeder_task: asyncio.Task[None] | None = None
-        self.__video_ts_epoch = time.monotonic()
+        self.__real_video_frame_ts: int | None = None
 
-    def __current_video_rtp_timestamp(self) -> int:
-        elapsed_s = time.monotonic() - self.__video_ts_epoch
-        return int(elapsed_s * _VIDEO_RTP_CLOCK_HZ) & 0xFFFFFFFF
+    @staticmethod
+    def __current_video_rtp_timestamp() -> int:
+        return int(time.monotonic() * _VIDEO_RTP_CLOCK_HZ) & 0xFFFFFFFF
+
+    def __rewrite_real_video_timestamp(self, rtp_packet: bytes) -> bytes:
+        if self.__real_video_frame_ts is None:
+            self.__real_video_frame_ts = self.__current_video_rtp_timestamp()
+        timestamp = self.__real_video_frame_ts
+        if rtp_packet[1] & _RTP_MARKER_BIT:
+            self.__real_video_frame_ts = None
+        return self.__with_rtp_timestamp(rtp_packet, timestamp)
 
     @staticmethod
     def __with_rtp_timestamp(rtp_packet: bytes, timestamp: int) -> bytes:
@@ -259,7 +268,7 @@ class RTSPProxyServer:
                             "local RTSP proxy: forwarded frame #%d channel=%d len=%d", count, channel, len(payload)
                         )
                     if channel == VIDEO_CHANNELS[0]:
-                        payload = self.__with_rtp_timestamp(payload, self.__current_video_rtp_timestamp())
+                        payload = self.__rewrite_real_video_timestamp(payload)
                     header = bytes([0x24, channel]) + len(payload).to_bytes(2, "big")
                     writer.write(header + payload)
                     await writer.drain()
