@@ -879,6 +879,11 @@ class GwellIPCamClient:
         """Cross-protocol reachability, shared between the RTSP session and every UDP-based poll."""
         return self.__link_status
 
+    @property
+    def rtsp_proxy(self) -> RTSPProxyServer:
+        """The local RTSP relay (for a still-image snapshot while the upstream camera is offline)."""
+        return self.__rtsp_proxy
+
     async def async_start_streaming(self) -> None:
         """Open the shared RTSP session and start the local header-fixing proxy; kept open for the entry's lifetime."""
         await self.__rtsp_proxy.async_load_persisted_frame()
@@ -1074,10 +1079,14 @@ class GwellIPCamClient:
             await self.__quick_record_store.async_save({"saved_record_type": None})
             return False, fresh
 
-    async def async_get_record_quality(self, *, uid: str | None = None) -> int | None:
+    async def async_get_record_quality(self, *, uid: str | None = None) -> int:
         """Fetch Record Quality (0-4)."""
         wire = await self.__get_wire()
-        return await wire.get_record_quality(uid or _new_uid())
+        result = await wire.get_record_quality(uid or _new_uid())
+        if result is None:
+            msg = "no response from camera"
+            raise APIConnectionError(msg)
+        return result
 
     async def async_set_record_quality(self, value: int, *, uid: str | None = None) -> int:
         """Wait for a reply confirming the value actually changed, and return that freshly-confirmed value."""

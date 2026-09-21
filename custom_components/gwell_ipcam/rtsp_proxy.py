@@ -6,7 +6,9 @@ import asyncio
 import contextlib
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
+
+from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN, LOGGER, WIRE_LOGGER
 from .fallback_stream import FALLBACK_FPS, FallbackEncoder, FrameCache
@@ -17,12 +19,34 @@ _REQUEST_READ_TIMEOUT_S = 8.0
 _MAX_CONTENT_LENGTH = 262144
 _ONLINE_POLL_TIMEOUT_S = 1.0
 _VIDEO_RTP_CLOCK_HZ = 90000  # RFC 6184
-_RTP_MARKER_BIT = 0x80  # byte 1 of the RTP header: set on the last packet of a frame (RFC 3550/6184)
+_PROXY_PORT_BASE = 39000
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
     from .rtsp import RTSPSession
+
+
+class _PortData(TypedDict):
+    hwm: int
+    ports: dict[str, int]
+
+
+class _ProxyPortAllocator:
+    def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
+        self.__store: Store[_PortData] = Store(hass, version=1, key=f"{DOMAIN}.proxy_ports")
+        self.__entry_id = entry_id
+
+    async def async_get_port(self) -> int:
+        data = await self.__store.async_load() or _PortData(hwm=_PROXY_PORT_BASE, ports={})
+        if self.__entry_id in data["ports"]:
+            return data["ports"][self.__entry_id]
+        port = data["hwm"]
+        data["ports"][self.__entry_id] = port
+        data["hwm"] = port + 1
+        await self.__store.async_save(data)
+        return port
+
 
 _SERVER_NAME = f"{DOMAIN}-proxy"
 _SESSION_ID = "gwell1"
@@ -116,20 +140,12 @@ class RTSPProxyServer:
         self._server: asyncio.Server | None = None
         self.__hass = hass
         self.__frame_cache = FrameCache(hass, entry_id)
+        self.__port_allocator = _ProxyPortAllocator(hass, entry_id)
         self.__feeder_task: asyncio.Task[None] | None = None
-        self.__real_video_frame_ts: int | None = None
 
     @staticmethod
     def __current_video_rtp_timestamp() -> int:
         return int(time.monotonic() * _VIDEO_RTP_CLOCK_HZ) & 0xFFFFFFFF
-
-    def __rewrite_real_video_timestamp(self, rtp_packet: bytes) -> bytes:
-        if self.__real_video_frame_ts is None:
-            self.__real_video_frame_ts = self.__current_video_rtp_timestamp()
-        timestamp = self.__real_video_frame_ts
-        if rtp_packet[1] & _RTP_MARKER_BIT:
-            self.__real_video_frame_ts = None
-        return self.__with_rtp_timestamp(rtp_packet, timestamp)
 
     @staticmethod
     def __with_rtp_timestamp(rtp_packet: bytes, timestamp: int) -> bytes:
@@ -145,9 +161,14 @@ class RTSPProxyServer:
         """Load the last real frame saved to disk, if any; call before `start()` picks up its first client."""
         await self.__frame_cache.async_load_persisted()
 
+    async def async_render_offline_snapshot(self, error: str) -> bytes:
+        """Render a JPEG snapshot for the offline/fallback stream, using the last real frame if available."""
+        return await self.__hass.async_add_executor_job(self.__frame_cache.render_jpeg, error)
+
     async def start(self) -> None:
-        """Start listening on an OS-assigned local port."""
-        self._server = await asyncio.start_server(self.__handle_client, host="127.0.0.1", port=0)
+        """Start listening on this entry's assigned local port (stable across reloads/restarts)."""
+        port = await self.__port_allocator.async_get_port()
+        self._server = await asyncio.start_server(self.__handle_client, host="127.0.0.1", port=port)
         self.__feeder_task = asyncio.get_running_loop().create_task(self.__feed_frame_cache())
 
     async def stop(self) -> None:
@@ -250,6 +271,7 @@ class RTSPProxyServer:
     async def __forward(self, writer: asyncio.StreamWriter, channels: tuple[int, ...]) -> None:
         LOGGER.debug("local RTSP proxy: forward task started for channels=%s", channels)
         count = 0
+        video_ts_offset: int | None = None
         try:
             async with self._session.subscribe(channels) as frames:
                 frame_iter = frames.__aiter__()
@@ -268,7 +290,10 @@ class RTSPProxyServer:
                             "local RTSP proxy: forwarded frame #%d channel=%d len=%d", count, channel, len(payload)
                         )
                     if channel == VIDEO_CHANNELS[0]:
-                        payload = self.__rewrite_real_video_timestamp(payload)
+                        upstream_ts = int.from_bytes(payload[4:8], "big")
+                        if video_ts_offset is None:
+                            video_ts_offset = self.__current_video_rtp_timestamp() - upstream_ts
+                        payload = self.__with_rtp_timestamp(payload, (upstream_ts + video_ts_offset) & 0xFFFFFFFF)
                     header = bytes([0x24, channel]) + len(payload).to_bytes(2, "big")
                     writer.write(header + payload)
                     await writer.drain()

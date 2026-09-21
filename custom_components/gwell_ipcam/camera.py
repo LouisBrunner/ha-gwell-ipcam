@@ -98,6 +98,10 @@ class GwellIPCamCamera(GwellIPCamEntity[GwellIPCamCoordinator], Camera):
 
     async def async_camera_image(self, width: int | None = None, height: int | None = None) -> bytes | None:
         """HA's MJPEG view calls this directly, bypassing `use_stream_for_stills` -- reuse the stream here too."""
+        client = self.coordinator.config_entry.runtime_data.client
+        if not client.rtsp_session.online:
+            error = str(client.rtsp_session.last_error) if client.rtsp_session.last_error else "camera offline"
+            return await client.rtsp_proxy.async_render_offline_snapshot(error)
         if not self.stream:
             if CameraEntityFeature.STREAM not in self.supported_features:
                 return None

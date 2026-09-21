@@ -37,4 +37,5 @@ def mock_store(monkeypatch) -> dict[str, FakeStore]:
 
     monkeypatch.setattr("custom_components.gwell_ipcam.api.Store", _make_store)
     monkeypatch.setattr("custom_components.gwell_ipcam.fallback_stream.Store", _make_store)
+    monkeypatch.setattr("custom_components.gwell_ipcam.rtsp_proxy.Store", _make_store)
     return stores

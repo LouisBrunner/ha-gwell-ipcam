@@ -253,7 +253,8 @@ class GwellIPCamCoordinator(DataUpdateCoordinator[GwellIPCamState]):
             lambda: client.async_get_record_quality(uid=uid),
             _Fallback(has_previous, previous.record_quality if previous else None),
         )
-        if abs((dt_util.utcnow() - camera_time).total_seconds()) > CLOCK_DRIFT_THRESHOLD_S:
+        drift_s = abs((dt_util.utcnow() - camera_time).total_seconds())
+        if not ctx.link_status.offline and drift_s > CLOCK_DRIFT_THRESHOLD_S:
             LOGGER.info("[%s] Camera clock drifted from %s, syncing", uid, camera_time)
             camera_time = await _fetch_or_keep_previous(
                 ctx,

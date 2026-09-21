@@ -238,6 +238,12 @@ class FrameCache:
 
         return Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
 
+    def render_jpeg(self, error: str) -> bytes:
+        """`render()`, encoded as a plain JPEG -- for a snapshot while the RTSP video fallback is also active."""
+        buf = io.BytesIO()
+        self.render(error=error).save(buf, format="JPEG")
+        return buf.getvalue()
+
 
 class FallbackEncoder:
     """Encodes rendered fallback frames to Annex-B H264 NAL units, ready for RTP packetization."""

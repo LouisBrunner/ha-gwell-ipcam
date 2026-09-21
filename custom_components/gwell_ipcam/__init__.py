@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_PORT, Platform
 from homeassistant.core import callback
-from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryError, ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
@@ -103,14 +103,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -
         recordings_coordinator=recordings_coordinator,
     )
 
-    if degraded:
-        coordinator.last_update_success = False
-        recordings_coordinator.last_update_success = False
-        await coordinator.async_refresh()
-        await recordings_coordinator.async_refresh()
-    else:
-        await coordinator.async_config_entry_first_refresh()
-        await recordings_coordinator.async_config_entry_first_refresh()
+    await entry.runtime_data.async_start_coordinators(hass, entry, degraded=degraded)
 
     # Seed the baseline before listening, or every recording already on the SD card looks "new" on this boot.
     boot_recordings = recordings_coordinator.data or []
@@ -120,7 +113,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: GwellIPCamConfigEntry) -
         recordings_coordinator.async_add_listener(lambda: async_handle_recordings_update(hass, entry))
     )
 
-    await client.async_start_streaming()
+    try:
+        await client.async_start_streaming()
+    except OSError as e:
+        raise ConfigEntryNotReady(str(e)) from e
     entry.async_on_unload(client.async_stop_streaming)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
