@@ -821,7 +821,7 @@ class GwellIPCamClient:
         self.__password_int = entry_password(password_hash)
         self.__link_status = CameraLinkStatus()
         self.__rtsp_session = RTSPSession(host, self.__link_status)
-        self.__rtsp_proxy = RTSPProxyServer(self.__rtsp_session, hass=hass, entry_id=entry_id)
+        self.__rtsp_proxy = RTSPProxyServer(self.__rtsp_session, host=host, hass=hass, entry_id=entry_id)
         self.__quick_record_store: Store[dict[str, int | None]] = Store(
             hass, version=1, key=f"{DOMAIN}.{entry_id}.quick_record"
         )

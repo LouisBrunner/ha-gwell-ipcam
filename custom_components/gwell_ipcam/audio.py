@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import io
 from typing import TYPE_CHECKING
 
 import av
+import yarl
 from homeassistant.components import media_source
-from homeassistant.helpers.network import get_url
+from homeassistant.components.media_player import async_process_play_media_url
 
 from .const import LOGGER, SATELLITE_SAMPLE_RATE_HZ, TALK_SAMPLE_RATE_HZ
 from .rtsp import AUDIO_CHANNELS
@@ -19,23 +21,29 @@ if TYPE_CHECKING:
     from .rtsp import RTSPSession
 
 _RTP_HEADER_BYTES = 12
+_TTS_PROXY_PREFIX = "/api/tts_proxy/"
 
 
-async def async_media_id_to_pcm16_8k(hass: HomeAssistant, media_id: str) -> bytes:
+async def async_media_id_to_pcm16_8k(hass: HomeAssistant, media_id: str, entity_id: str) -> bytes:
     """Decode arbitrary playable media into 8kHz mono PCM16 for the talk channel."""
-    url = media_id
-    if media_source.is_media_source_id(url):
-        resolved = await media_source.async_resolve_media(hass, url, None)
-        url = resolved.url
-    if url.startswith("/"):
-        url = f"{get_url(hass)}{url}"
-    return await hass.async_add_executor_job(lambda: _decode_to_pcm16(url, TALK_SAMPLE_RATE_HZ))
+    if media_source.is_media_source_id(media_id):
+        media_id = (await media_source.async_resolve_media(hass, media_id, entity_id)).url
+    path = yarl.URL(media_id).path
+    if path.startswith(_TTS_PROXY_PREFIX):
+        from homeassistant.components import tts  # noqa: PLC0415
+
+        stream = tts.async_get_stream(hass, path.removeprefix(_TTS_PROXY_PREFIX))
+        if stream is not None:
+            data = b"".join([chunk async for chunk in stream.async_stream_result()])
+            return await hass.async_add_executor_job(_decode_to_pcm16, io.BytesIO(data), TALK_SAMPLE_RATE_HZ)
+    url = async_process_play_media_url(hass, media_id)
+    return await hass.async_add_executor_job(_decode_to_pcm16, url, TALK_SAMPLE_RATE_HZ)
 
 
-def _decode_to_pcm16(url: str, rate_hz: int) -> bytes:
+def _decode_to_pcm16(source: str | io.BytesIO, rate_hz: int) -> bytes:
     resampler = av.AudioResampler(format="s16", layout="mono", rate=rate_hz)
     out = bytearray()
-    with av.open(url, timeout=(10.0, 10.0)) as container:
+    with av.open(source, mode="r", timeout=(10.0, 10.0) if isinstance(source, str) else None) as container:
         stream = container.streams.audio[0]
         for packet in container.demux(stream):
             for frame in packet.decode():

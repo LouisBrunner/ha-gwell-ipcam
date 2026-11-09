@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import voluptuous as vol
+from homeassistant.components import camera as camera_component
 from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from .api import CameraIdentity
     from .data import GwellIPCamConfigEntry
 
+CameraEntityCapabilities = getattr(camera_component, "CameraEntityCapabilities", None)
 SERVICE_PTZ = "ptz"
 _PTZ_MOVE_SCHEMA = vol.Schema(
     {
@@ -62,6 +64,8 @@ class GwellIPCamCamera(GwellIPCamEntity[GwellIPCamCoordinator], Camera):
         """Initialize the camera; `Camera.__init__` is called directly since cooperative `super()` doesn't reach it."""
         super().__init__(coordinator, identity)
         Camera.__init__(self)
+        if CameraEntityCapabilities is not None:
+            self._attr_camera_entity_capabilities = CameraEntityCapabilities(two_way_audio=True)
         self.__identity = identity
         self._attr_unique_id = f"{coordinator.config_entry.unique_id}_live"
 

@@ -61,7 +61,7 @@ class GwellIPCamMediaPlayer(GwellIPCamEntity[GwellIPCamCoordinator], MediaPlayer
         self._attr_state = MediaPlayerState.PLAYING
         self.async_write_ha_state()
         try:
-            pcm = await async_media_id_to_pcm16_8k(self.hass, media_id)
+            pcm = await async_media_id_to_pcm16_8k(self.hass, media_id, self.entity_id)
             await client.async_talk(pcm)
         finally:
             self._attr_state = MediaPlayerState.IDLE

@@ -1,7 +1,7 @@
 {
 	"domain": "gwell_ipcam",
 	"name": "Gwell IP Camera",
-	"after_dependencies": ["media_source"],
+	"after_dependencies": ["media_source", "tts"],
 	"codeowners": ["@LouisBrunner"],
 	"config_flow": true,
 	"dependencies": ["http"],

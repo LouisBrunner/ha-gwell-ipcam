@@ -9,7 +9,7 @@ dependencies = []
 [dependency-groups]
 dev = ["ruff==0.16.8", "tombi==1.5.5", "ty==0.0.82"]
 docker = ["aiohasupervisor==0.6.0"]
-hass = ["av==18.1.0", "homeassistant==2026.4.2"]
+hass = ["av==18.1.0", "homeassistant==2026.11.0"]
 test = ["av==18.1.0", "pytest-homeassistant-custom-component==0.13.365"]
 
 [tool.pytest.ini_options]
@@ -64,10 +64,13 @@ packages = ["custom_components"]
 [tool.uv]
 package = false
 index-strategy = "unsafe-best-match"
-# docker/hass/test each pin their own homeassistant-compatible dependency
-# versions and are never installed together -- let each resolve independently.
-conflicts = [[{ group = "docker" }, { group = "test" }], [{ group = "hass" }, { group = "test" }]]
+preview-features = ["index-exclude-newer"]
+conflicts = [
+  [{ group = "docker" }, { group = "test" }],
+  [{ group = "hass" }, { group = "test" }]
+]
 
 [[tool.uv.index]]
 name = "hass-musl"
 url = "https://wheels.home-assistant.io/musllinux-index/"
+exclude-newer = false

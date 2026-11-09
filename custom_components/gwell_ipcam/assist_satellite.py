@@ -67,7 +67,7 @@ class GwellIPCamAssistSatellite(GwellIPCamEntity[GwellIPCamCoordinator], AssistS
         """Decode `announcement.media_id` to PCM16 and push it to the camera's speaker."""
         LOGGER.debug("User announced %s on %s", announcement.media_id, self.entity_id)
         client = self.coordinator.config_entry.runtime_data.client
-        pcm = await async_media_id_to_pcm16_8k(self.hass, announcement.media_id)
+        pcm = await async_media_id_to_pcm16_8k(self.hass, announcement.media_id, self.entity_id)
         await client.async_talk(pcm)
 
     async def async_start_conversation(self, start_announcement: AssistSatelliteAnnouncement) -> None:

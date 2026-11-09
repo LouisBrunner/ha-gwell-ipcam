@@ -57,7 +57,9 @@ async def cancel_and_wait(task: asyncio.Task) -> None:
         await asyncio.wait_for(task, timeout=_CANCEL_TIMEOUT_S)
 
 
+VIDEO_TRACK = "track1"
 VIDEO_CHANNELS = (0, 1)
+AUDIO_TRACK = "track2"
 AUDIO_CHANNELS = (2, 3)
 
 # "DWON" is the vendor's own typo, baked into the camera's compiled command table.
@@ -286,11 +288,11 @@ class RTSPSession:
         desc = await self.__simple(f"DESCRIBE {url} RTSP/1.0", {"Accept": "application/sdp"})
         self.__sdp = desc.body
         session1 = await self.__simple(
-            f"SETUP {url}/track1 RTSP/1.0", {"Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"}
+            f"SETUP {url}/{VIDEO_TRACK} RTSP/1.0", {"Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"}
         )
         session_id = session1.session_id or ""
         await self.__simple(
-            f"SETUP {url}/track2 RTSP/1.0",
+            f"SETUP {url}/{AUDIO_TRACK} RTSP/1.0",
             {"Transport": "RTP/AVP/TCP;unicast;interleaved=2-3", "Session": session_id},
         )
         await self.__simple(f"PLAY {url} RTSP/1.0", {"Session": session_id, "Range": "npt=0.000-"})
@@ -448,6 +450,7 @@ class TalkSession:
         self.__reader: asyncio.StreamReader | None = None
         self.__writer: asyncio.StreamWriter | None = None
         self.__cseq = 0
+        self.__pending = bytearray()
 
     async def __aenter__(self) -> Self:
         """Open the connection and issue AudioCtlCmd:OPEN."""
@@ -472,26 +475,30 @@ class TalkSession:
             with contextlib.suppress(OSError, TimeoutError):
                 await asyncio.wait_for(self.__writer.wait_closed(), timeout=_CANCEL_TIMEOUT_S)
 
-    async def send_pcm16(self, pcm16_8khz_mono: bytes) -> None:
-        """Push PCM16 audio paced to real time; each frame is `$`+channel+u16 length+12-byte gap+320-byte payload."""
-        assert self.__writer is not None  # noqa: S101
+    async def send_pcm16(self, pcm16_8khz_mono: bytes, *, paced: bool = True) -> None:
+        """Push PCM16 audio paced to real time, or with `paced=False` buffer partial 20ms chunks until complete."""
         LOGGER.debug("RTSP talk: sending %d bytes of PCM16 audio to %s", len(pcm16_8khz_mono), self.__host)
-        header_prefix = bytes([_INTERLEAVE_MARKER, _TALK_CHANNEL])
-        length_field = (_TALK_GAP_BYTES + _TALK_CHUNK_BYTES).to_bytes(2, "little")
-        gap = bytes(_TALK_GAP_BYTES)
+        self.__pending += pcm16_8khz_mono
         chunk_duration_s = (_TALK_CHUNK_BYTES // 2) / TALK_SAMPLE_RATE_HZ
         loop = asyncio.get_running_loop()
         start = loop.time()
-        offsets = range(0, len(pcm16_8khz_mono), _TALK_CHUNK_BYTES)
-        for sent, offset in enumerate(offsets, start=1):
-            chunk = pcm16_8khz_mono[offset : offset + _TALK_CHUNK_BYTES]
-            if len(chunk) < _TALK_CHUNK_BYTES:
-                chunk = chunk + bytes(_TALK_CHUNK_BYTES - len(chunk))
-            self.__writer.write(header_prefix + length_field + gap + chunk)
-            await self.__writer.drain()
+        sent = 0
+        while len(self.__pending) >= _TALK_CHUNK_BYTES or (paced and self.__pending):
+            chunk = bytes(self.__pending[:_TALK_CHUNK_BYTES]).ljust(_TALK_CHUNK_BYTES, b"\0")
+            del self.__pending[:_TALK_CHUNK_BYTES]
+            await self.__send_frame(chunk)
+            sent += 1
             delay = (start + sent * chunk_duration_s) - loop.time()
-            if delay > 0:
+            if paced and delay > 0:
                 await asyncio.sleep(delay)
+
+    async def __send_frame(self, chunk: bytes) -> None:
+        if self.__writer is None:
+            msg = "talk session is not connected"
+            raise RTSPError(msg)
+        length_field = (_TALK_GAP_BYTES + _TALK_CHUNK_BYTES).to_bytes(2, "little")
+        self.__writer.write(bytes([_INTERLEAVE_MARKER, _TALK_CHANNEL]) + length_field + bytes(_TALK_GAP_BYTES) + chunk)
+        await self.__writer.drain()
 
     def __next_cseq(self) -> int:
         self.__cseq += 1

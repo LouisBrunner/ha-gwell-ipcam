@@ -8,18 +8,35 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypedDict
 
+import av
 from homeassistant.helpers.storage import Store
 
-from .const import DOMAIN, LOGGER, WIRE_LOGGER
+from .const import DOMAIN, LOGGER, TALK_SAMPLE_RATE_HZ, WIRE_LOGGER
 from .fallback_stream import FALLBACK_FPS, FallbackEncoder, FrameCache
-from .rtsp import AUDIO_CHANNELS, VIDEO_CHANNELS, cancel_and_wait
+from .rtsp import (
+    _INTERLEAVE_HEADER_BYTES,
+    _INTERLEAVE_MARKER,
+    AUDIO_CHANNELS,
+    AUDIO_TRACK,
+    VIDEO_CHANNELS,
+    VIDEO_TRACK,
+    RTSPError,
+    TalkSession,
+    cancel_and_wait,
+)
 
+_BACKCHANNEL_CHANNELS = (4, 5)
+_BACKCHANNEL_TRACK = "track3"
+_BACKCHANNEL_SDP = f"m=audio 0 RTP/AVP 8\r\na=control:{_BACKCHANNEL_TRACK}\r\na=rtpmap:8 PCMA/8000\r\na=sendonly\r\n"
+_RTP_FIXED_HEADER_BYTES = 12
 _CANCEL_TIMEOUT_S = 5.0
 _REQUEST_READ_TIMEOUT_S = 8.0
 _MAX_CONTENT_LENGTH = 262144
 _ONLINE_POLL_TIMEOUT_S = 1.0
 _VIDEO_RTP_CLOCK_HZ = 90000  # RFC 6184
 _PROXY_PORT_BASE = 39000
+
+assert {*VIDEO_CHANNELS, *AUDIO_CHANNELS, *_BACKCHANNEL_CHANNELS} == set(range(6)), "channel numbers must be 0..5"  # noqa: S101
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -57,7 +74,7 @@ _FALLBACK_SDP = (
     f"s={DOMAIN} fallback\r\n"
     "t=0 0\r\n"
     "m=video 0 RTP/AVP 96\r\n"
-    "a=control:track1\r\n"
+    f"a=control:{VIDEO_TRACK}\r\n"
     "a=rtpmap:96 H264/90000\r\n"
     "a=fmtp:96 packetization-mode=1\r\n"
 )
@@ -71,10 +88,33 @@ class _Request:
     headers: dict[str, str]
 
 
-async def _read_request(reader: asyncio.StreamReader, buf: bytearray, timeout_s: float | None) -> _Request | None:
-    """Parse one request out of `buf` (refilled from `reader` as needed); `timeout_s=None` once PLAY is active."""
+@dataclass
+class _Interleaved:
+    channel: int
+    payload: bytes
+
+    @staticmethod
+    def build(buf: bytearray) -> _Interleaved | None:
+        if len(buf) < _INTERLEAVE_HEADER_BYTES:
+            return None
+        total_len = _INTERLEAVE_HEADER_BYTES + int.from_bytes(buf[2:4], "big")
+        if len(buf) < total_len:
+            return None
+        frame = _Interleaved(channel=buf[1], payload=bytes(buf[_INTERLEAVE_HEADER_BYTES:total_len]))
+        del buf[:total_len]
+        return frame
+
+
+async def _read_request(  # noqa: C901
+    reader: asyncio.StreamReader, buf: bytearray, timeout_s: float | None
+) -> _Request | _Interleaved | None:
+    """Parse one request or interleaved frame out of `buf`; `timeout_s=None` once PLAY is active."""
     while True:
         idx = bytes(buf).find(b"\r\n\r\n")
+        if buf[:1] == bytes([_INTERLEAVE_MARKER]):
+            if (frame := _Interleaved.build(buf)) is not None:
+                return frame
+            idx = -1
         if idx == -1:
             chunk = await asyncio.wait_for(reader.read(4096), timeout=timeout_s)
             if not chunk:
@@ -125,18 +165,55 @@ async def _write_response(
     await writer.drain()
 
 
+class _BackchannelSink:
+    def __init__(self, host: str) -> None:
+        self.__host = host
+        self.__stack = contextlib.AsyncExitStack()
+        self.__talk: TalkSession | None = None
+        self.__decoder = av.CodecContext.create("pcm_alaw", "r")
+        self.__decoder.sample_rate = TALK_SAMPLE_RATE_HZ
+        self.__decoder.layout = "mono"
+
+    async def feed(self, rtp_packet: bytes) -> None:
+        payload = self.__rtp_payload(rtp_packet)
+        if not payload:
+            return
+        try:
+            if self.__talk is None:
+                self.__talk = await self.__stack.enter_async_context(TalkSession(self.__host))
+            for frame in self.__decoder.decode(av.Packet(payload)):
+                await self.__talk.send_pcm16(frame.to_ndarray().tobytes(), paced=False)
+        except RTSPError, OSError, TimeoutError:
+            LOGGER.debug("local RTSP proxy: backchannel to %s failed", self.__host, exc_info=True)
+
+    async def close(self) -> None:
+        await self.__stack.aclose()
+
+    @staticmethod
+    def __rtp_payload(packet: bytes) -> bytes:
+        if len(packet) <= _RTP_FIXED_HEADER_BYTES:
+            return b""
+        start = _RTP_FIXED_HEADER_BYTES + 4 * (packet[0] & 0x0F)
+        if packet[0] & 0x10:
+            start += 4 + 4 * int.from_bytes(packet[start + 2 : start + 4], "big")
+        end = len(packet) - packet[-1] if packet[0] & 0x20 else len(packet)
+        return packet[start:end]
+
+
 @dataclass
 class _ConnectionState:
     subscribed_channels: set[int]
     forward_task: asyncio.Task[None] | None = None
+    backchannel: _BackchannelSink | None = None
 
 
 class RTSPProxyServer:
     """Serves the shared RTSPSession's video+audio to local RTSP/TCP clients."""
 
-    def __init__(self, session: RTSPSession, *, hass: HomeAssistant, entry_id: str) -> None:
+    def __init__(self, session: RTSPSession, *, host: str, hass: HomeAssistant, entry_id: str) -> None:
         """Initialize the proxy in front of an already-connected (or soon-to-be) RTSPSession."""
         self._session = session
+        self.__host = host
         self._server: asyncio.Server | None = None
         self.__hass = hass
         self.__frame_cache = FrameCache(hass, entry_id)
@@ -211,9 +288,17 @@ class RTSPProxyServer:
         finally:
             if state.forward_task is not None:
                 await cancel_and_wait(state.forward_task)
+            if state.backchannel is not None:
+                await state.backchannel.close()
 
-    async def __handle_request(self, request: _Request, writer: asyncio.StreamWriter, state: _ConnectionState) -> bool:
+    async def __handle_request(
+        self, request: _Request | _Interleaved, writer: asyncio.StreamWriter, state: _ConnectionState
+    ) -> bool:
         """Handle one request; returns False once TEARDOWN closes the connection."""
+        if isinstance(request, _Interleaved):
+            if state.backchannel is not None and request.channel == _BACKCHANNEL_CHANNELS[0]:
+                await state.backchannel.feed(request.payload)
+            return True
         if request.method == "OPTIONS":
             await _write_response(
                 writer, request.cseq, extra_headers={"Public": "OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN"}
@@ -223,7 +308,7 @@ class RTSPProxyServer:
                 writer,
                 request.cseq,
                 extra_headers={"Content-Type": "application/sdp", "Content-Base": request.url},
-                body=self._session.sdp if self._session.online and self._session.sdp else _FALLBACK_SDP,
+                body=self.__describe_body(request),
             )
         elif request.method == "SETUP":
             transport = self.__setup_transport(request.url, state)
@@ -245,13 +330,24 @@ class RTSPProxyServer:
             await _write_response(writer, request.cseq, status="501 Not Implemented")
         return True
 
-    @staticmethod
-    def __setup_transport(url: str, state: _ConnectionState) -> str | None:
+    def __describe_body(self, request: _Request) -> str:
+        if not (self._session.online and self._session.sdp):
+            return _FALLBACK_SDP
+        body = self._session.sdp
+        if "backchannel" in request.headers.get("require", ""):
+            body = body.rstrip("\r\n") + "\r\n" + _BACKCHANNEL_SDP
+        return body
+
+    def __setup_transport(self, url: str, state: _ConnectionState) -> str | None:
         # Always interleaved TCP on the upstream's fixed channel numbers, regardless of the client's request.
-        if url.endswith("/track1"):
+        if url.endswith(f"/{_BACKCHANNEL_TRACK}"):
+            if state.backchannel is None:
+                state.backchannel = _BackchannelSink(self.__host)
+            return f"RTP/AVP/TCP;unicast;interleaved={_BACKCHANNEL_CHANNELS[0]}-{_BACKCHANNEL_CHANNELS[1]}"
+        if url.endswith(f"/{VIDEO_TRACK}"):
             state.subscribed_channels.update(VIDEO_CHANNELS)
             return f"RTP/AVP/TCP;unicast;interleaved={VIDEO_CHANNELS[0]}-{VIDEO_CHANNELS[1]}"
-        if url.endswith("/track2"):
+        if url.endswith(f"/{AUDIO_TRACK}"):
             state.subscribed_channels.update(AUDIO_CHANNELS)
             return f"RTP/AVP/TCP;unicast;interleaved={AUDIO_CHANNELS[0]}-{AUDIO_CHANNELS[1]}"
         return None

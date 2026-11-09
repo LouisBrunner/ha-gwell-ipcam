@@ -14,9 +14,6 @@ go2rtc:
 homeassistant:
   debug: true
 
-http:
-  server_port: 8124
-
 logger:
   default: info
   logs:
