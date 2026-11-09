@@ -30,51 +30,58 @@ jobs:
       options: --user root
     steps:
       - name: Install dependencies
-        run: apk add --no-cache git make
+        run: apk add --no-cache git
 
       - name: Checkout the repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
+
+      - name: Set up just
+        uses: extractions/setup-just@v4.0.0
+        with:
+          just-version: "1.58.0"
 
       # FIXME: for some reason the hash changes everyday for the same version
       - name: Refresh multidict hashes
         run: uv lock --upgrade-package multidict
-
-      - name: Install dependencies
-        run: make setup
 
       - name: Vet
-        run: make vet
+        run: just vet
 
-  test:
-    name: Test
+  manifest-sync:
+    name: Manifest sync
     runs-on: ubuntu-24.04
-    container:
-      image: ghcr.io/home-assistant/homeassistant-base:2026.05.0
-      options: --user root
     steps:
-      - name: Install dependencies
-        run: apk add --no-cache git make
-
       - name: Checkout the repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
 
-      # FIXME: for some reason the hash changes everyday for the same version
-      - name: Refresh multidict hashes
-        run: uv lock --upgrade-package multidict
+      - name: Set up just
+        uses: extractions/setup-just@v4.0.0
+        with:
+          just-version: "1.58.0"
 
-      - name: Test
-        run: make test
+      - name: Set up Biome
+        uses: biomejs/setup-biome@v2.7.1
+        with:
+          version: 2.5.0
+
+      - name: Check manifest sync
+        run: |
+          just manifest-sync
+          if ! git diff --exit-code custom_components/gwell_ipcam/manifest.json; then
+            echo "manifest.json is out of sync, run 'just manifest-sync' to fix"
+            exit 1
+          fi

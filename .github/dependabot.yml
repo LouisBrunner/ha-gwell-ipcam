@@ -1,5 +1,10 @@
 # yaml-language-server: $schema=https://json.schemastore.org/dependabot-2.0.json
 version: 2
+registries:
+  hass-musl:
+    type: python-index
+    url: https://wheels.home-assistant.io/musllinux-index/
+    replaces-base: false
 updates:
   - package-ecosystem: "github-actions"
     cooldown:
@@ -82,12 +87,15 @@ updates:
     cooldown:
       default-days: 7
     directory: "/"
+    registries:
+      - hass-musl
     schedule:
       interval: "weekly"
     ignore:
-      # Dependabot should not update Home Assistant as that should match the homeassistant key in hacs.json
+      # FIXME: we are tied to the targeted Home Assistant version (hacs.json), bump them together by hand
+      - dependency-name: "aiohasupervisor"
+      - dependency-name: "av"
       - dependency-name: "homeassistant"
-      - dependency-name: "uv"
     groups:
       uv-security:
         applies-to: security-updates

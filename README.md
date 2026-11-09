@@ -35,40 +35,22 @@ The following features cannot currently be implemented without a cloud relay (i.
 
 ## Development
 
-Start the devcontainer with:
+Build and start the devcontainer, then run HA in it (accessible [locally](http://localhost:8124)) with the integration:
 
 ```bash
-make devcontainer-start
+just dev
 ```
 
-Then connect to the container in another terminal:
+To get a shell in the container from another terminal:
 
 ```bash
-make devcontainer
+just devcontainer
 ```
 
-You can then setup the dependencies using
+Check the integration using:
 
 ```bash
-make setup
-```
-
-then start running HA (accessible [locally](http://localhost:8124)) with the integration:
-
-```bash
-make dev
-```
-
-Lint the integration using:
-
-```bash
-make vet
-```
-
-Run the test suite using:
-
-```bash
-make test
+just vet
 ```
 
 ## Disclaimers
