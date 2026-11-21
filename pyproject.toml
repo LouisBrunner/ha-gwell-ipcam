@@ -9,9 +9,9 @@ dependencies = ["av"]
 [dependency-groups]
 dev = [
   "pytest-homeassistant==2026.11.1",
-  "ruff==0.16.8",
-  "tombi==1.5.5",
-  "ty==0.0.82",
+  "ruff==0.17.5",
+  "tombi==1.11.2",
+  "ty==0.0.104",
 ]
 hass = ["homeassistant==2026.11.1"]
 
